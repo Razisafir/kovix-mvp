@@ -1,0 +1,16 @@
+{
+  "name": "kovix-mvp",
+  "version": "1.0.0",
+  "description": "Kovix - AI Coding Agent MVP",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "electron": "^33.0.0",
+    "openai": "^4.73.0"
+  }
+}
