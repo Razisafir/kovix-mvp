@@ -2,557 +2,164 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>KOVIX :: Autonomous Self-Healing IDE</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <style>
-    @keyframes flash-red {
-      0%, 100% { background-color: rgba(239, 68, 68, 0); }
-      50%      { background-color: rgba(239, 68, 68, 0.22); }
-    }
-    @keyframes flash-green {
-      0%, 100% { background-color: rgba(34, 197, 94, 0); }
-      50%      { background-color: rgba(34, 197, 94, 0.22); }
-    }
-    .flash-red   { animation: flash-red   0.6s ease-in-out 2; }
-    .flash-green { animation: flash-green 0.6s ease-in-out 2; }
-    .log-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
-    .log-scroll::-webkit-scrollbar-thumb { background: #1f2937; border-radius: 4px; }
-    .log-scroll::-webkit-scrollbar-track { background: transparent; }
-    .grid-bg {
-      background-image:
-        linear-gradient(rgba(56,189,248,0.04) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(56,189,248,0.04) 1px, transparent 1px);
-      background-size: 32px 32px;
-    }
-    pre, code, textarea, button, input, select {
-      font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    }
-    .tab-active { color: #e2e8f0; border-color: #06b6d4; }
-    .tab-idle   { color: #64748b; border-color: transparent; }
-  </style>
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+  <title>Kovix MVP</title>
+  <link rel="stylesheet" href="style.css" />
 </head>
-<body class="bg-[#0a0e14] text-slate-200 min-h-screen grid-bg">
-
-  <!-- Header -->
-  <header class="border-b border-slate-800 bg-black/40 backdrop-blur sticky top-0 z-10">
-    <div class="max-w-7xl mx-auto px-6 py-3 flex items-center justify-between">
-      <div class="flex items-center gap-3">
-        <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-cyan-500 to-violet-600 flex items-center justify-center font-bold text-lg shadow-lg shadow-cyan-500/20">K</div>
-        <div>
-          <h1 class="text-xl font-bold tracking-tight">KOVIX</h1>
-          <p class="text-xs text-slate-400">Autonomous Self-Healing Agentic IDE &middot; PAUL-aligned &middot; v0.2</p>
-        </div>
+<body>
+  <div id="app">
+    <!-- ============================ Header ============================ -->
+    <header class="app-header">
+      <div class="brand">
+        <div class="brand-mark">K</div>
+        <div class="brand-name">Kovix MVP</div>
       </div>
-      <div class="flex items-center gap-2 text-xs">
-        <span id="status-dot" class="w-2 h-2 rounded-full bg-slate-500"></span>
-        <span id="status-text" class="text-slate-400 uppercase tracking-wider">IDLE</span>
-      </div>
-    </div>
-  </header>
-
-  <!-- Provider bar -->
-  <div class="border-b border-slate-800 bg-black/20">
-    <div class="max-w-7xl mx-auto px-6 py-3 grid grid-cols-1 md:grid-cols-12 gap-2 items-end">
-      <div class="md:col-span-3">
-        <label class="block text-[10px] font-semibold text-slate-500 mb-1 tracking-widest">PROVIDER</label>
-        <select id="provider-select"
-          class="w-full bg-[#0d1117] border border-slate-700 rounded-md px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"></select>
-      </div>
-      <div class="md:col-span-5">
-        <label class="block text-[10px] font-semibold text-slate-500 mb-1 tracking-widest">API KEY
-          <span id="env-hint" class="ml-2 text-slate-600 normal-case"></span>
-        </label>
-        <input id="api-key" type="password" autocomplete="off"
-          class="w-full bg-[#0d1117] border border-slate-700 rounded-md px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
-          placeholder="sk-... (leave blank to use env var)" />
-      </div>
-      <div class="md:col-span-3">
-        <label class="block text-[10px] font-semibold text-slate-500 mb-1 tracking-widest">MODEL</label>
-        <select id="model-select"
-          class="w-full bg-[#0d1117] border border-slate-700 rounded-md px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500">
-          <option value="">-- Load Models --</option>
-        </select>
-      </div>
-      <div class="md:col-span-1">
-        <button id="load-models-btn"
-          class="w-full bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-semibold py-1.5 rounded-md">
-          LOAD
+      <div class="header-actions">
+        <button id="reset-btn" class="ghost-btn" title="Reset conversation">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="1 4 1 10 7 10"></polyline>
+            <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
+          </svg>
+          <span>New</span>
         </button>
+        <button id="settings-btn" class="ghost-btn" title="Open settings">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+          <span>Settings</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- ============================ Body ============================ -->
+    <div class="app-body">
+      <!-- Sidebar: 5 workflow steps -->
+      <aside class="sidebar">
+        <div class="sidebar-title">Workflow</div>
+        <ol id="step-list" class="step-list">
+          <li class="step-item active" data-step="idea">
+            <span class="step-num">1</span>
+            <span class="step-name">Idea</span>
+          </li>
+          <li class="step-item" data-step="refine">
+            <span class="step-num">2</span>
+            <span class="step-name">Refine</span>
+          </li>
+          <li class="step-item" data-step="spec">
+            <span class="step-num">3</span>
+            <span class="step-name">Spec</span>
+          </li>
+          <li class="step-item" data-step="plan">
+            <span class="step-num">4</span>
+            <span class="step-name">Plan</span>
+          </li>
+          <li class="step-item" data-step="execute">
+            <span class="step-num">5</span>
+            <span class="step-name">Execute</span>
+          </li>
+        </ol>
+        <div class="sidebar-footer">
+          <div class="status-card">
+            <div class="status-row">
+              <span class="status-label">Provider</span>
+              <span id="status-provider" class="status-value">—</span>
+            </div>
+            <div class="status-row">
+              <span class="status-label">Model</span>
+              <span id="status-model" class="status-value">—</span>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Main: chat -->
+      <main class="chat-pane">
+        <div id="messages" class="messages">
+          <div class="welcome">
+            <div class="welcome-title">Welcome to Kovix MVP</div>
+            <div class="welcome-sub">
+              Start by typing an idea. The 5-step workflow will refine it into a spec, plan the
+              build, then write code to <code>output.txt</code>.
+            </div>
+          </div>
+        </div>
+
+        <div class="composer">
+          <div id="error-banner" class="error-banner hidden"></div>
+          <div id="info-banner" class="info-banner hidden"></div>
+          <div class="composer-row">
+            <textarea id="input" class="input" rows="1"
+                      placeholder="Type your idea and press Send…"></textarea>
+            <button id="send-btn" class="primary-btn">Send</button>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <!-- ============================ Settings Modal ============================ -->
+  <div id="settings-modal" class="modal hidden" aria-hidden="true">
+    <div class="modal-backdrop" data-close></div>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-label="Settings">
+      <div class="modal-header">
+        <h2>Settings</h2>
+        <button class="icon-btn" data-close aria-label="Close">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+
+      <div class="modal-body">
+        <div class="field">
+          <label for="provider">Provider</label>
+          <select id="provider">
+            <option value="">— Select a provider —</option>
+            <option value="openai">OpenAI</option>
+            <option value="openrouter">OpenRouter</option>
+            <option value="anthropic">Anthropic</option>
+            <option value="ollama">Ollama</option>
+            <option value="gemini">Gemini</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="api-key">API Key</label>
+          <input id="api-key" type="password" placeholder="sk-…" autocomplete="off" />
+        </div>
+
+        <div class="field">
+          <label for="base-url">Base URL <span class="hint">(optional — defaults applied if blank)</span></label>
+          <input id="base-url" type="text" placeholder="https://api.openai.com/v1" />
+        </div>
+
+        <div class="field row">
+          <div class="grow">
+            <label for="model">Model</label>
+            <select id="model" disabled>
+              <option value="">Click “Fetch Models” first</option>
+            </select>
+          </div>
+          <button id="fetch-models-btn" class="secondary-btn" type="button">Fetch Models</button>
+        </div>
+
+        <div id="settings-error" class="error-banner hidden"></div>
+        <div id="settings-info" class="info-banner hidden"></div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="ghost-btn" data-close>Cancel</button>
+        <button id="save-settings-btn" class="primary-btn">Save</button>
       </div>
     </div>
   </div>
 
-  <main class="max-w-7xl mx-auto px-6 py-6">
-
-    <!-- Tabs -->
-    <div class="flex items-center gap-6 border-b border-slate-800 mb-6 text-sm">
-      <button id="tab-run"     class="tab-btn tab-active px-2 py-2 border-b-2 -mb-px font-semibold">Run</button>
-      <button id="tab-history" class="tab-btn tab-idle   px-2 py-2 border-b-2 -mb-px font-semibold">History</button>
-    </div>
-
-    <!-- Run tab -->
-    <section id="panel-run" class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-
-      <!-- Left column -->
-      <div class="lg:col-span-1 space-y-4">
-
-        <div class="rounded-lg border border-slate-800 bg-black/30 p-5">
-          <label for="vibe" class="block text-xs font-semibold text-slate-400 mb-2 tracking-widest">VIBE INPUT</label>
-          <textarea id="vibe" rows="4"
-            class="w-full bg-[#0d1117] border border-slate-700 rounded-md p-3 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-500 resize-none"
-            placeholder="Describe what you want built. e.g. 'A CLI that fetches weather for a city and prints a 3-day forecast.'"></textarea>
-          <button id="execute-btn"
-            class="mt-3 w-full bg-gradient-to-r from-cyan-500 to-violet-600 hover:from-cyan-400 hover:to-violet-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold py-2.5 rounded-md transition-colors tracking-wider">
-            EXECUTE
-          </button>
-          <p class="mt-2 text-[10px] text-slate-500 text-center">Ctrl/Cmd + Enter to run &middot; offline fallback if no key</p>
-        </div>
-
-        <div class="rounded-lg border border-slate-800 bg-black/30 p-5">
-          <h2 class="text-xs font-semibold text-slate-400 mb-3 tracking-widest">PHASE TRACKER</h2>
-          <ol class="space-y-2.5 text-sm">
-            <li id="phase-PLAN"  class="flex items-center gap-3 text-slate-500"><span class="phase-dot w-2 h-2 rounded-full bg-slate-600"></span><span class="font-mono w-16 text-cyan-500/70">PLAN</span><span class="text-xs">refine vibe &rarr; BDD plan</span></li>
-            <li id="phase-APPLY" class="flex items-center gap-3 text-slate-500"><span class="phase-dot w-2 h-2 rounded-full bg-slate-600"></span><span class="font-mono w-16 text-amber-500/70">APPLY</span><span class="text-xs">write &amp; execute each milestone</span></li>
-            <li id="phase-HEAL"  class="flex items-center gap-3 text-slate-500"><span class="phase-dot w-2 h-2 rounded-full bg-slate-600"></span><span class="font-mono w-16 text-rose-500/70">HEAL</span><span class="text-xs">Intent / Spec / Code routing</span></li>
-            <li id="phase-UNIFY" class="flex items-center gap-3 text-slate-500"><span class="phase-dot w-2 h-2 rounded-full bg-slate-600"></span><span class="font-mono w-16 text-violet-500/70">UNIFY</span><span class="text-xs">reconcile plan vs reality</span></li>
-          </ol>
-        </div>
-
-        <div class="rounded-lg border border-slate-800 bg-black/30 p-5 text-[11px] text-slate-400 space-y-1.5">
-          <p><span class="text-cyan-400 font-mono">PLAN</span> &mdash; refine vibe into a strict, BDD-anchored plan.</p>
-          <p><span class="text-amber-400 font-mono">APPLY</span> &mdash; generate &amp; execute each milestone via subprocess.</p>
-          <p><span class="text-rose-400 font-mono">HEAL</span> &mdash; classify failure as INTENT / SPEC / CODE, then patch.</p>
-          <p class="text-slate-500">&nbsp;&nbsp;&nbsp;&nbsp;SPEC &rarr; re-call generate_plan with reasoning (max 2 retries).</p>
-          <p><span class="text-violet-400 font-mono">UNIFY</span> &mdash; reconcile executed reality against acceptance criteria.</p>
-        </div>
-
-      </div>
-
-      <!-- Right column: live log -->
-      <div class="lg:col-span-2">
-        <div id="log-panel" class="rounded-lg border border-slate-800 bg-[#0d1117] h-[72vh] flex flex-col transition-colors">
-          <div class="flex items-center justify-between px-4 py-2 border-b border-slate-800 bg-black/40">
-            <div class="flex items-center gap-1.5">
-              <span class="w-3 h-3 rounded-full bg-rose-500/70"></span>
-              <span class="w-3 h-3 rounded-full bg-amber-500/70"></span>
-              <span class="w-3 h-3 rounded-full bg-emerald-500/70"></span>
-            </div>
-            <span id="log-title" class="text-xs text-slate-500">kovix://loop/live</span>
-            <button id="clear-btn" class="text-xs text-slate-500 hover:text-slate-300">clear</button>
-          </div>
-          <div id="log" class="flex-1 overflow-y-auto log-scroll p-4 text-sm space-y-1">
-            <div class="text-slate-600 italic">$ awaiting vibe...</div>
-          </div>
-        </div>
-      </div>
-
-    </section>
-
-    <!-- History tab -->
-    <section id="panel-history" class="hidden">
-      <div class="flex items-center justify-between mb-4">
-        <div>
-          <h2 class="text-lg font-bold">Run History</h2>
-          <p class="text-xs text-slate-400">Persisted in <code class="text-cyan-400">kovix.db</code> (SQLite).</p>
-        </div>
-        <button id="refresh-history" class="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-semibold px-3 py-1.5 rounded-md">REFRESH</button>
-      </div>
-      <div class="rounded-lg border border-slate-800 bg-black/30 overflow-hidden">
-        <table class="w-full text-sm">
-          <thead class="bg-black/40 text-slate-400 text-xs uppercase tracking-wider">
-            <tr>
-              <th class="text-left px-3 py-2">#</th>
-              <th class="text-left px-3 py-2">Started</th>
-              <th class="text-left px-3 py-2">Provider</th>
-              <th class="text-left px-3 py-2">Model</th>
-              <th class="text-left px-3 py-2">Vibe</th>
-              <th class="text-center px-3 py-2">Verdict</th>
-              <th class="text-center px-3 py-2">Passed</th>
-              <th class="text-center px-3 py-2">SPEC retries</th>
-              <th class="text-center px-3 py-2"></th>
-            </tr>
-          </thead>
-          <tbody id="history-body" class="divide-y divide-slate-800"></tbody>
-        </table>
-      </div>
-
-      <!-- Detail panel -->
-      <div id="history-detail" class="mt-6 rounded-lg border border-slate-800 bg-black/30 p-5 hidden">
-        <div class="flex items-center justify-between mb-3">
-          <h3 class="font-bold">Run detail</h3>
-          <button id="close-detail" class="text-slate-500 hover:text-slate-300 text-xs">close</button>
-        </div>
-        <div id="history-detail-content" class="text-xs space-y-3 overflow-x-auto"></div>
-      </div>
-    </section>
-
-  </main>
-
-  <script>
-    const $ = (id) => document.getElementById(id);
-    const vibeEl     = $('vibe');
-    const btn        = $('execute-btn');
-    const logEl      = $('log');
-    const clearBtn   = $('clear-btn');
-    const statusDot  = $('status-dot');
-    const statusText = $('status-text');
-    const panel      = $('log-panel');
-
-    const providerSelect = $('provider-select');
-    const apiKeyInput    = $('api-key');
-    const modelSelect    = $('model-select');
-    const loadModelsBtn  = $('load-models-btn');
-    const envHint        = $('env-hint');
-
-    const PHASE_COLORS = { PLAN:'text-cyan-400', APPLY:'text-amber-400', HEAL:'text-rose-400', UNIFY:'text-violet-400', FATAL:'text-rose-500', DONE:'text-slate-400' };
-    const STATUS_COLORS = { info:'text-slate-300', success:'text-emerald-400', warn:'text-amber-300', error:'text-rose-400' };
-    const PHASE_DOT_COLORS = { PLAN:'bg-cyan-400', APPLY:'bg-amber-400', HEAL:'bg-rose-400', UNIFY:'bg-violet-400' };
-
-    const LS_KEY = 'kovix.config.v2';
-    function saveConfig() {
-      try {
-        localStorage.setItem(LS_KEY, JSON.stringify({
-          provider: providerSelect.value,
-          api_key: apiKeyInput.value,
-          model: modelSelect.value,
-        }));
-      } catch {}
-    }
-    function loadConfig() {
-      try {
-        const c = JSON.parse(localStorage.getItem(LS_KEY) || '{}');
-        if (c.provider) providerSelect.value = c.provider;
-        if (c.api_key)  apiKeyInput.value = c.api_key;
-        if (c.model) {
-          // Will only stick if the same option exists after a Load.
-          setTimeout(() => { if ([...modelSelect.options].some(o => o.value === c.model)) modelSelect.value = c.model; }, 0);
-        }
-      } catch {}
-    }
-
-    // ------------------------------------------------------------------ #
-    // Provider / model loading
-    // ------------------------------------------------------------------ #
-    let PROVIDER_CATALOG = [];
-
-    async function bootstrapProviders() {
-      const r = await fetch('/api/providers');
-      const data = await r.json();
-      PROVIDER_CATALOG = data.providers;
-      providerSelect.innerHTML = PROVIDER_CATALOG.map(p =>
-        `<option value="${p.id}">${p.name}</option>`).join('');
-      if (data.default_provider) providerSelect.value = data.default_provider;
-      loadConfig();
-      updateEnvHint();
-    }
-
-    function updateEnvHint() {
-      const p = PROVIDER_CATALOG.find(x => x.id === providerSelect.value);
-      if (!p) return;
-      envHint.textContent = p.needs_key_for_models === 'no'
-        ? '(public model list, key optional)'
-        : `(env var: ${p.env_var})`;
-    }
-
-    providerSelect.addEventListener('change', () => {
-      modelSelect.innerHTML = '<option value="">-- Load Models --</option>';
-      saveConfig();
-      updateEnvHint();
-    });
-    apiKeyInput.addEventListener('change', saveConfig);
-    modelSelect.addEventListener('change', saveConfig);
-
-    async function loadModels() {
-      loadModelsBtn.disabled = true;
-      loadModelsBtn.textContent = '...';
-      try {
-        const r = await fetch('/api/models', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            provider: providerSelect.value,
-            api_key: apiKeyInput.value || null,
-          }),
-        });
-        if (!r.ok) {
-          const err = await r.json().catch(() => ({ detail: r.statusText }));
-          throw new Error(err.detail || r.statusText);
-        }
-        const data = await r.json();
-        const models = data.models || [];
-        if (models.length === 0) {
-          modelSelect.innerHTML = '<option value="">(no models returned)</option>';
-        } else {
-          modelSelect.innerHTML = models.map(m => `<option value="${m}">${m}</option>`).join('');
-          if (data.default_model && models.includes(data.default_model)) {
-            modelSelect.value = data.default_model;
-          } else {
-            modelSelect.value = models[0];
-          }
-        }
-        saveConfig();
-      } catch (e) {
-        alert('Failed to load models: ' + e.message);
-      } finally {
-        loadModelsBtn.disabled = false;
-        loadModelsBtn.textContent = 'LOAD';
-      }
-    }
-    loadModelsBtn.addEventListener('click', loadModels);
-
-    // ------------------------------------------------------------------ #
-    // Status / phase helpers
-    // ------------------------------------------------------------------ #
-    function setStatus(text, dotColor) {
-      statusText.textContent = text;
-      statusDot.className = `w-2 h-2 rounded-full ${dotColor}`;
-    }
-    function setPhaseActive(phase, active) {
-      const el = $(`phase-${phase}`);
-      if (!el) return;
-      const dot = el.querySelector('.phase-dot');
-      if (active) {
-        el.classList.remove('text-slate-500'); el.classList.add('text-slate-100');
-        if (dot) dot.className = `phase-dot w-2 h-2 rounded-full ${PHASE_DOT_COLORS[phase]}`;
-      } else {
-        el.classList.add('text-slate-500'); el.classList.remove('text-slate-100');
-        if (dot) dot.className = 'phase-dot w-2 h-2 rounded-full bg-slate-600';
-      }
-    }
-    function resetPhases() { ['PLAN','APPLY','HEAL','UNIFY'].forEach(p => setPhaseActive(p, false)); }
-
-    function appendLine(ev) {
-      if (logEl.children.length === 1 && logEl.firstChild.classList?.contains('italic')) {
-        logEl.innerHTML = '';
-      }
-      const ts = (ev.timestamp || new Date().toISOString()).slice(11, 19);
-      const phase = ev.phase || 'INFO';
-      const status = ev.status || 'info';
-      const phaseColor = PHASE_COLORS[phase] || 'text-slate-300';
-      const statusColor = STATUS_COLORS[status] || 'text-slate-300';
-
-      const wrap = document.createElement('div');
-      wrap.className = `flex gap-3 ${statusColor}`;
-
-      const time = document.createElement('span');
-      time.className = 'text-slate-600 shrink-0';
-      time.textContent = ts;
-
-      const tag = document.createElement('span');
-      tag.className = `${phaseColor} shrink-0 font-semibold w-20`;
-      tag.textContent = `[${phase}]`;
-
-      const msg = document.createElement('span');
-      msg.className = 'flex-1 whitespace-pre-wrap break-words';
-      msg.textContent = ev.message || '';
-
-      wrap.appendChild(time); wrap.appendChild(tag); wrap.appendChild(msg);
-      logEl.appendChild(wrap);
-
-      if (ev.payload && Object.keys(ev.payload).length > 0) {
-        const det = document.createElement('pre');
-        det.className = 'ml-[7.5rem] text-xs text-slate-500 bg-black/30 rounded p-2 overflow-x-auto border border-slate-800/60';
-        try { det.textContent = JSON.stringify(ev.payload, null, 2); }
-        catch { det.textContent = String(ev.payload); }
-        logEl.appendChild(det);
-      }
-      logEl.scrollTop = logEl.scrollHeight;
-
-      if (phase === 'HEAL') {
-        panel.classList.remove('flash-red','flash-green');
-        void panel.offsetWidth;
-        panel.classList.add(status === 'success' ? 'flash-green' : 'flash-red');
-      }
-      if (phase === 'UNIFY') {
-        panel.classList.remove('flash-red','flash-green');
-        void panel.offsetWidth;
-        panel.classList.add(status === 'success' ? 'flash-green' : 'flash-red');
-      }
-    }
-
-    // ------------------------------------------------------------------ #
-    // Execute
-    // ------------------------------------------------------------------ #
-    async function runExecute() {
-      const prompt = vibeEl.value.trim();
-      if (!prompt) { vibeEl.focus(); return; }
-      btn.disabled = true; btn.textContent = 'EXECUTING...';
-      resetPhases(); logEl.innerHTML = '';
-      setStatus('PLAN', 'bg-cyan-400'); setPhaseActive('PLAN', true);
-
-      const body = {
-        prompt,
-        provider: providerSelect.value,
-        api_key: apiKeyInput.value || null,
-        model: modelSelect.value || null,
-      };
-
-      let resp;
-      try {
-        resp = await fetch('/api/execute', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-      } catch (e) {
-        appendLine({ phase: 'FATAL', message: `Request failed: ${e}`, status: 'error' });
-        finish(); return;
-      }
-      if (!resp.ok || !resp.body) {
-        const err = await resp.json().catch(() => ({ detail: resp.statusText }));
-        appendLine({ phase: 'FATAL', message: `HTTP ${resp.status}: ${err.detail || ''}`, status: 'error' });
-        finish(); return;
-      }
-
-      const reader = resp.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let currentPhase = 'PLAN';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split('\n\n');
-        buffer = parts.pop() || '';
-        for (const part of parts) {
-          const line = part.trim();
-          if (!line.startsWith('data:')) continue;
-          const data = line.slice(5).trim();
-          if (!data) continue;
-          let ev; try { ev = JSON.parse(data); } catch { continue; }
-
-          if (ev.phase && ev.phase !== 'DONE' && ev.phase !== 'FATAL') {
-            if (ev.phase !== currentPhase) {
-              setPhaseActive(currentPhase, false);
-              currentPhase = ev.phase;
-              setPhaseActive(currentPhase, true);
-              const dotMap = { PLAN:'bg-cyan-400', APPLY:'bg-amber-400', HEAL:'bg-rose-400', UNIFY:'bg-violet-400' };
-              setStatus(ev.phase, dotMap[ev.phase] || 'bg-slate-400');
-            }
-          }
-          if (ev.phase === 'DONE') continue;
-          appendLine(ev);
-        }
-      }
-      finish();
-    }
-    function finish() {
-      btn.disabled = false; btn.textContent = 'EXECUTE';
-      ['PLAN','APPLY','HEAL','UNIFY'].forEach(p => setPhaseActive(p, false));
-      setStatus('IDLE', 'bg-slate-500');
-    }
-
-    btn.addEventListener('click', runExecute);
-    clearBtn.addEventListener('click', () => { logEl.innerHTML = '<div class="text-slate-600 italic">$ log cleared</div>'; });
-    vibeEl.addEventListener('keydown', (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); runExecute(); }
-    });
-
-    // ------------------------------------------------------------------ #
-    // Tabs
-    // ------------------------------------------------------------------ #
-    const tabRun     = $('tab-run');
-    const tabHistory = $('tab-history');
-    const panelRun     = $('panel-run');
-    const panelHistory = $('panel-history');
-
-    function showTab(which) {
-      const onRun = which === 'run';
-      tabRun.classList.toggle('tab-active', onRun);
-      tabRun.classList.toggle('tab-idle', !onRun);
-      tabHistory.classList.toggle('tab-active', !onRun);
-      tabHistory.classList.toggle('tab-idle', onRun);
-      panelRun.classList.toggle('hidden', !onRun);
-      panelHistory.classList.toggle('hidden', onRun);
-      if (!onRun) refreshHistory();
-    }
-    tabRun.addEventListener('click', () => showTab('run'));
-    tabHistory.addEventListener('click', () => showTab('history'));
-
-    // ------------------------------------------------------------------ #
-    // History
-    // ------------------------------------------------------------------ #
-    async function refreshHistory() {
-      const tbody = $('history-body');
-      tbody.innerHTML = '<tr><td colspan="9" class="px-3 py-4 text-center text-slate-500">loading...</td></tr>';
-      try {
-        const r = await fetch('/api/runs');
-        const data = await r.json();
-        const runs = data.runs || [];
-        if (runs.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="9" class="px-3 py-4 text-center text-slate-500">no runs yet</td></tr>';
-          return;
-        }
-        tbody.innerHTML = runs.map(r => {
-          const verdictColor = r.verdict === 'SUCCESS' ? 'text-emerald-400'
-                              : r.verdict === 'PARTIAL' ? 'text-amber-300' : 'text-rose-400';
-          const ts = (r.started_at || '').replace('T',' ').slice(0,19);
-          return `<tr class="hover:bg-black/20 cursor-pointer" data-run-id="${r.id}">
-            <td class="px-3 py-2 text-slate-400">${r.id}</td>
-            <td class="px-3 py-2 text-slate-400">${ts}</td>
-            <td class="px-3 py-2 text-cyan-300">${r.provider || '-'}</td>
-            <td class="px-3 py-2 text-slate-300">${r.model || '-'}</td>
-            <td class="px-3 py-2 text-slate-300 max-w-md truncate" title="${(r.vibe||'').replace(/"/g,'&quot;')}">${(r.vibe||'').slice(0,60)}</td>
-            <td class="px-3 py-2 text-center ${verdictColor} font-semibold">${r.verdict || '-'}</td>
-            <td class="px-3 py-2 text-center text-slate-300">${r.passed ?? '-'}/${r.total_milestones ?? '-'}</td>
-            <td class="px-3 py-2 text-center text-slate-400">${r.spec_retries ?? 0}</td>
-            <td class="px-3 py-2 text-center text-cyan-400 text-xs">view</td>
-          </tr>`;
-        }).join('');
-        tbody.querySelectorAll('tr[data-run-id]').forEach(tr => {
-          tr.addEventListener('click', () => loadRunDetail(parseInt(tr.dataset.runId, 10)));
-        });
-      } catch (e) {
-        tbody.innerHTML = `<tr><td colspan="9" class="px-3 py-4 text-center text-rose-400">load failed: ${e.message}</td></tr>`;
-      }
-    }
-    $('refresh-history').addEventListener('click', refreshHistory);
-    $('close-detail').addEventListener('click', () => $('history-detail').classList.add('hidden'));
-
-    async function loadRunDetail(runId) {
-      const wrap = $('history-detail');
-      const content = $('history-detail-content');
-      wrap.classList.remove('hidden');
-      content.innerHTML = '<div class="text-slate-500">loading...</div>';
-      try {
-        const r = await fetch(`/api/runs/${runId}`);
-        const d = await r.json();
-        const fmtList = (items, render) =>
-          items && items.length ? items.map(render).join('') : '<div class="text-slate-500 italic">none</div>';
-
-        let html = '';
-        html += `<div><div class="text-slate-500 mb-1">Vibe</div><div class="text-slate-200">${escapeHtml(d.vibe||'')}</div></div>`;
-        html += `<div><div class="text-slate-500 mb-1">Goal</div><div class="text-slate-200">${escapeHtml(d.goal||'')}</div></div>`;
-        html += `<div class="grid grid-cols-4 gap-3">
-          <div><div class="text-slate-500">Verdict</div><div class="font-bold ${d.verdict==='SUCCESS'?'text-emerald-400':d.verdict==='PARTIAL'?'text-amber-300':'text-rose-400'}">${d.verdict||'-'}</div></div>
-          <div><div class="text-slate-500">Passed</div><div class="text-slate-200">${d.passed}/${d.total_milestones}</div></div>
-          <div><div class="text-slate-500">SPEC retries</div><div class="text-slate-200">${d.spec_retries ?? 0}</div></div>
-          <div><div class="text-slate-500">Provider/Model</div><div class="text-slate-200">${d.provider} / ${d.model}</div></div>
-        </div>`;
-        html += `<div><div class="text-slate-500 mb-1">Milestones</div><pre class="bg-black/30 border border-slate-800 rounded p-2 overflow-x-auto text-slate-300">${escapeHtml(JSON.stringify(d.milestones||[], null, 2))}</pre></div>`;
-        html += `<div><div class="text-slate-500 mb-1">Healing events</div><pre class="bg-black/30 border border-slate-800 rounded p-2 overflow-x-auto text-slate-300">${escapeHtml(JSON.stringify(d.healing_events||[], null, 2))}</pre></div>`;
-        html += `<div><div class="text-slate-500 mb-1">Events (${(d.events||[]).length})</div><div class="bg-black/30 border border-slate-800 rounded p-2 max-h-64 overflow-y-auto log-scroll">${(d.events||[]).map(e => `<div class="text-slate-300"><span class="text-slate-600">${(e.timestamp||'').slice(11,19)}</span> <span class="text-cyan-400">[${e.phase}]</span> <span class="${e.status==='error'?'text-rose-400':e.status==='success'?'text-emerald-400':e.status==='warn'?'text-amber-300':'text-slate-300'}">${escapeHtml(e.message||'')}</span></div>`).join('')}</div></div>`;
-        content.innerHTML = html;
-      } catch (e) {
-        content.innerHTML = `<div class="text-rose-400">load failed: ${e.message}</div>`;
-      }
-    }
-    function escapeHtml(s) {
-      return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-    }
-
-    // ------------------------------------------------------------------ #
-    // Init
-    // ------------------------------------------------------------------ #
-    bootstrapProviders().then(() => {
-      fetch('/api/health').then(r => r.json()).then(d => {
-        if (!d.workspace_exists) {
-          appendLine({ phase: 'FATAL', message: 'workspace/ missing -- run `python setup_workspace.py` first.', status: 'error' });
-        }
-      }).catch(() => {});
-    });
-  </script>
+  <script src="renderer.js"></script>
 </body>
 </html>

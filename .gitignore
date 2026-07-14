@@ -1,3 +1,8 @@
+# Node / Electron
+node_modules/
+dist/
+out/
+
 # Kovix local artifacts (not for git)
 workspace/
 reference_paul/
@@ -9,3 +14,9 @@ __pycache__/
 .venv/
 .env
 *.log
+
+# User config (contains API keys) — use settings.example.json as template
+settings.json
+
+# Generated output
+output.txt

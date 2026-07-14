@@ -1,0 +1,35 @@
+{
+  "name": "kovix-mvp",
+  "version": "1.0.0",
+  "description": "Kovix MVP — multi-provider agentic Electron IDE with a 5-step state machine and end-to-end file writing.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "check": "node -c main.js && node -c preload.js && node -c renderer.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Razisafir/kovix-mvp.git"
+  },
+  "keywords": [
+    "electron",
+    "llm",
+    "agent",
+    "openai",
+    "anthropic",
+    "ollama",
+    "gemini",
+    "openrouter"
+  ],
+  "author": "Razisafir",
+  "license": "MIT",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Razisafir/kovix-mvp/issues"
+  },
+  "homepage": "https://github.com/Razisafir/kovix-mvp#readme",
+  "dependencies": {
+    "electron": "^33.4.11",
+    "openai": "^4.104.0"
+  }
+}
