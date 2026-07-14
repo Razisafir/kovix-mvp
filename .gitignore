@@ -1,4 +1,11 @@
-node_modules/
-.kovix/
-output/
-output.txt
+# Kovix local artifacts (not for git)
+workspace/
+reference_paul/
+kovix.db
+kovix.db-shm
+kovix.db-wal
+__pycache__/
+*.pyc
+.venv/
+.env
+*.log
