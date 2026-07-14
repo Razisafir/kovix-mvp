@@ -89,13 +89,18 @@ const TREE_MAX_DEPTH = 6;
 /* -------------------------------------------------------------------------- */
 /* Settings persistence                                                       */
 /* -------------------------------------------------------------------------- */
+//
+// All file I/O in the main process is ASYNC. Synchronous fs.*Sync() calls
+// block the Electron event loop, which freezes the BrowserWindow and makes
+// Windows show "(Not Responding)". This is especially bad when the workspace
+// is on a slow drive (network mount, OneDrive sync, spinning disk).
 
-function readSettings() {
+async function readSettings() {
   try {
     if (!fs.existsSync(SETTINGS_PATH)) {
       return { ...DEFAULT_SETTINGS };
     }
-    const raw = fs.readFileSync(SETTINGS_PATH, 'utf8');
+    const raw = await fsp.readFile(SETTINGS_PATH, 'utf8');
     const parsed = JSON.parse(raw);
     return { ...DEFAULT_SETTINGS, ...parsed };
   } catch (err) {
@@ -104,10 +109,10 @@ function readSettings() {
   }
 }
 
-function writeSettings(next) {
+async function writeSettings(next) {
   try {
     const merged = { ...DEFAULT_SETTINGS, ...next };
-    fs.writeFileSync(SETTINGS_PATH, JSON.stringify(merged, null, 2), 'utf8');
+    await fsp.writeFile(SETTINGS_PATH, JSON.stringify(merged, null, 2), 'utf8');
     return merged;
   } catch (err) {
     console.error('Failed to write settings.json:', err);
@@ -119,13 +124,13 @@ function writeSettings(next) {
 /* Active workspace                                                           */
 /* -------------------------------------------------------------------------- */
 
-function getActiveWorkspace() {
-  const s = readSettings();
+async function getActiveWorkspace() {
+  const s = await readSettings();
   return s.activeWorkspace || '';
 }
 
-function setActiveWorkspace(dirPath) {
-  const s = readSettings();
+async function setActiveWorkspace(dirPath) {
+  const s = await readSettings();
   return writeSettings({ ...s, activeWorkspace: dirPath });
 }
 
@@ -630,17 +635,17 @@ function advanceStep(current) {
 const SESSIONS_DIR_NAME = '.kovix';
 const SESSIONS_SUBDIR = 'sessions';
 
-function getSessionsDir() {
-  const ws = getActiveWorkspace();
+async function getSessionsDir() {
+  const ws = await getActiveWorkspace();
   if (!ws) return '';
   return path.join(ws, SESSIONS_DIR_NAME, SESSIONS_SUBDIR);
 }
 
-function ensureSessionsDir() {
-  const dir = getSessionsDir();
+async function ensureSessionsDir() {
+  const dir = await getSessionsDir();
   if (!dir) return '';
   try {
-    fs.mkdirSync(dir, { recursive: true });
+    await fsp.mkdir(dir, { recursive: true });
     return dir;
   } catch (err) {
     console.error('Failed to create sessions dir:', err);
@@ -664,9 +669,9 @@ function sessionTitleFromMessages(messages) {
   return t.length > 60 ? t.slice(0, 57) + '…' : (t || 'Untitled session');
 }
 
-function saveCurrentSession() {
+async function saveCurrentSession() {
   if (!convoState.messages.some((m) => m.role !== 'system')) return null;
-  const dir = ensureSessionsDir();
+  const dir = await ensureSessionsDir();
   if (!dir) return null;
   if (!convoState.sessionId) {
     convoState.sessionId = genSessionId();
@@ -681,7 +686,7 @@ function saveCurrentSession() {
     messages: convoState.messages.slice(),
   };
   try {
-    fs.writeFileSync(path.join(dir, `${convoState.sessionId}.json`), JSON.stringify(session, null, 2), 'utf8');
+    await fsp.writeFile(path.join(dir, `${convoState.sessionId}.json`), JSON.stringify(session, null, 2), 'utf8');
     return session;
   } catch (err) {
     console.error('Failed to save session:', err);
@@ -689,15 +694,17 @@ function saveCurrentSession() {
   }
 }
 
-function listSessions() {
-  const dir = getSessionsDir();
-  if (!dir || !fs.existsSync(dir)) return [];
+async function listSessions() {
+  const dir = await getSessionsDir();
+  if (!dir) return [];
   try {
-    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
+    if (!fs.existsSync(dir)) return [];
+    const entries = await fsp.readdir(dir);
+    const files = entries.filter((f) => f.endsWith('.json'));
     const sessions = [];
     for (const f of files) {
       try {
-        const raw = fs.readFileSync(path.join(dir, f), 'utf8');
+        const raw = await fsp.readFile(path.join(dir, f), 'utf8');
         const s = JSON.parse(raw);
         if (s && s.id && Array.isArray(s.messages)) {
           sessions.push({
@@ -720,13 +727,13 @@ function listSessions() {
   }
 }
 
-function loadSession(id) {
-  const dir = getSessionsDir();
+async function loadSession(id) {
+  const dir = await getSessionsDir();
   if (!dir) return null;
   const file = path.join(dir, `${id}.json`);
   if (!fs.existsSync(file)) return null;
   try {
-    const raw = fs.readFileSync(file, 'utf8');
+    const raw = await fsp.readFile(file, 'utf8');
     const s = JSON.parse(raw);
     if (!s || !s.id || !Array.isArray(s.messages)) return null;
     convoState.sessionId = s.id;
@@ -740,12 +747,12 @@ function loadSession(id) {
   }
 }
 
-function deleteSession(id) {
-  const dir = getSessionsDir();
+async function deleteSession(id) {
+  const dir = await getSessionsDir();
   if (!dir) return false;
   const file = path.join(dir, `${id}.json`);
   try {
-    if (fs.existsSync(file)) fs.unlinkSync(file);
+    if (fs.existsSync(file)) await fsp.unlink(file);
     // If we just deleted the active session, reset convo state too.
     if (convoState.sessionId === id) resetConvo();
     return true;
@@ -785,7 +792,7 @@ function notifyTreeChanged(relativePath) {
 
 ipcMain.handle('get-settings', async () => {
   try {
-    return readSettings();
+    return await readSettings();
   } catch (err) {
     console.error('get-settings error:', err);
     return { ...DEFAULT_SETTINGS };
@@ -797,7 +804,7 @@ ipcMain.handle('save-settings', async (_evt, next) => {
     if (!next || typeof next !== 'object') {
       throw new Error('Invalid settings payload.');
     }
-    return writeSettings(next);
+    return await writeSettings(next);
   } catch (err) {
     console.error('save-settings error:', err);
     throw err;
@@ -834,7 +841,7 @@ ipcMain.handle('dialog:open-folder', async () => {
       return { ok: false, canceled: true };
     }
     const dirPath = result.filePaths[0];
-    setActiveWorkspace(dirPath);
+    await setActiveWorkspace(dirPath);
     // Notify any open renderer that the workspace (and thus the tree) changed.
     notifyTreeChanged(null);
     return { ok: true, path: dirPath };
@@ -845,17 +852,22 @@ ipcMain.handle('dialog:open-folder', async () => {
 });
 
 ipcMain.handle('fs:get-workspace', async () => {
-  return { path: getActiveWorkspace() };
+  return { path: await getActiveWorkspace() };
 });
 
 ipcMain.handle('fs:get-tree', async () => {
   try {
-    const ws = getActiveWorkspace();
+    const ws = await getActiveWorkspace();
     if (!ws) {
       return { ok: false, error: 'No workspace open.' };
     }
-    if (!fs.existsSync(ws) || !fs.statSync(ws).isDirectory()) {
-      return { ok: false, error: 'Workspace path is not a directory.' };
+    try {
+      const stat = await fsp.stat(ws);
+      if (!stat.isDirectory()) {
+        return { ok: false, error: 'Workspace path is not a directory.' };
+      }
+    } catch (_) {
+      return { ok: false, error: 'Workspace path does not exist.' };
     }
     const tree = await buildTree(ws, TREE_MAX_DEPTH);
     return { ok: true, root: ws, tree };
@@ -871,7 +883,7 @@ ipcMain.handle('fs:read-file', async (_evt, filePath) => {
       return { ok: false, error: 'No file path provided.' };
     }
     // Sanity: file must live inside the active workspace (if one is set).
-    const ws = getActiveWorkspace();
+    const ws = await getActiveWorkspace();
     const resolved = path.resolve(filePath);
     if (ws) {
       const wsResolved = path.resolve(ws);
@@ -929,7 +941,7 @@ ipcMain.handle('send-message', async (_evt, req) => {
       };
     }
 
-    const settings = readSettings();
+    const settings = await readSettings();
 
     // Guard 1: provider configured?
     if (!settings.provider || !settings.model) {
@@ -955,7 +967,7 @@ ipcMain.handle('send-message', async (_evt, req) => {
         error: 'Please open a folder in the File Manager before starting.',
       };
     }
-    if (!fs.existsSync(workspace) || !fs.statSync(workspace).isDirectory()) {
+    if (!fs.existsSync(workspace)) {
       console.log(logTag, 'guard: workspace not found:', workspace);
       return {
         ok: false,
@@ -963,6 +975,26 @@ ipcMain.handle('send-message', async (_evt, req) => {
         nextStep: convoState.step,
         assistant: '',
         error: `Workspace not found: ${workspace}. Please open a different folder.`,
+      };
+    }
+    try {
+      const wsStat = await fsp.stat(workspace);
+      if (!wsStat.isDirectory()) {
+        return {
+          ok: false,
+          step: convoState.step,
+          nextStep: convoState.step,
+          assistant: '',
+          error: `Workspace path is not a directory: ${workspace}.`,
+        };
+      }
+    } catch (statErr) {
+      return {
+        ok: false,
+        step: convoState.step,
+        nextStep: convoState.step,
+        assistant: '',
+        error: `Cannot access workspace: ${statErr.message}`,
       };
     }
 
@@ -1018,11 +1050,11 @@ ipcMain.handle('send-message', async (_evt, req) => {
       const filename = pickOutputFilename(lang);
       const outPath = path.join(workspace, filename);
       try {
-        fs.writeFileSync(outPath, code, 'utf8');
+        await fsp.writeFile(outPath, code, 'utf8');
         // Tell the renderer to refresh its file tree.
         notifyTreeChanged(filename);
         // Persist the session transcript.
-        const saved = saveCurrentSession();
+        const saved = await saveCurrentSession();
         return {
           ok: true,
           step: currentStep,
@@ -1048,7 +1080,7 @@ ipcMain.handle('send-message', async (_evt, req) => {
 
     // Non-execute steps: advance and let the renderer show the assistant text.
     convoState.step = nextStep;
-    const saved = saveCurrentSession();
+    const saved = await saveCurrentSession();
     return {
       ok: true,
       step: currentStep,
@@ -1089,7 +1121,7 @@ ipcMain.handle('send-message', async (_evt, req) => {
 
 ipcMain.handle('sessions:list', async () => {
   try {
-    return { ok: true, sessions: listSessions() };
+    return { ok: true, sessions: await listSessions() };
   } catch (err) {
     console.error('sessions:list error:', err);
     return { ok: false, error: err.message, sessions: [] };
@@ -1101,7 +1133,7 @@ ipcMain.handle('sessions:load', async (_evt, id) => {
     if (typeof id !== 'string' || !id) {
       throw new Error('Session id required.');
     }
-    const s = loadSession(id);
+    const s = await loadSession(id);
     if (!s) {
       return { ok: false, error: 'Session not found.' };
     }
@@ -1127,7 +1159,7 @@ ipcMain.handle('sessions:delete', async (_evt, id) => {
     if (typeof id !== 'string' || !id) {
       throw new Error('Session id required.');
     }
-    const ok = deleteSession(id);
+    const ok = await deleteSession(id);
     return { ok };
   } catch (err) {
     console.error('sessions:delete error:', err);
@@ -1181,7 +1213,7 @@ ipcMain.handle('get-convo-state', async () => {
   return {
     step: convoState.step,
     labels: STEP_LABELS,
-    workspace: getActiveWorkspace(),
+    workspace: await getActiveWorkspace(),
     sessionId: convoState.sessionId,
     startedAt: convoState.startedAt,
   };
