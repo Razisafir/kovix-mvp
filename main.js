@@ -284,32 +284,28 @@ async function callLLM(settings, messages) {
         baseURL: baseUrl || DEFAULT_BASE_URLS[provider],
         // CRITICAL: the openai SDK defaults to maxRetries:2 with exponential
         // backoff, which can hang for minutes on 429/5xx and freeze the UI.
-        // We set maxRetries:1 so one transient retry is allowed, then we fail
-        // fast and surface the error to the user.
-        maxRetries: 1,
-        // Hard timeout on the underlying HTTP request. The SDK's own timeout
-        // only covers the initial connection; this covers the full request.
-        timeout: 60_000,
+        // maxRetries:0 = no retries, fail immediately on any error so the
+        // user sees the real error message (401, 429, etc.) instantly.
+        maxRetries: 0,
+        // SDK-level timeout: aborts the HTTP request after 45s.
+        timeout: 45_000,
         defaultHeaders: provider === 'openrouter' ? {
           'HTTP-Referer': 'https://github.com/Razisafir/kovix-mvp',
           'X-Title': 'Kovix MVP',
         } : undefined,
       });
-      // AbortController as a belt-and-suspenders hard cap.
-      const ac = new AbortController();
-      const timeout = setTimeout(() => ac.abort(), 70_000);
-      try {
-        const completion = await client.chat.completions.create({
-          model,
-          messages,
-          temperature: 0.7,
-        }, { signal: ac.signal });
-        const text = completion?.choices?.[0]?.message?.content;
-        if (!text) throw new Error('LLM returned an empty response.');
-        return text;
-      } finally {
-        clearTimeout(timeout);
-      }
+      // NOTE: do NOT pass an external AbortController signal here. The SDK
+      // creates its own internal signal from the `timeout` option, and
+      // passing a second signal conflicts with it, causing spurious
+      // "Request was aborted" errors. The SDK's own timeout is sufficient.
+      const completion = await client.chat.completions.create({
+        model,
+        messages,
+        temperature: 0.7,
+      });
+      const text = completion?.choices?.[0]?.message?.content;
+      if (!text) throw new Error('LLM returned an empty response.');
+      return text;
     }
 
     case 'anthropic': {
@@ -1062,12 +1058,27 @@ ipcMain.handle('send-message', async (_evt, req) => {
     };
   } catch (err) {
     console.error('send-message error:', err);
+    // Translate common SDK errors into user-friendly messages.
+    let msg = err && err.message ? err.message : String(err);
+    if (err && err.constructor && err.constructor.name === 'APIUserAbortError') {
+      msg = 'Request aborted. If this keeps happening, check your API key in Settings.';
+    } else if (err && err.status === 401) {
+      msg = 'Invalid API key (401). Open Settings and paste a valid key for your provider.';
+    } else if (err && err.status === 429) {
+      msg = 'Rate limited (429). Wait a moment and try again, or switch to a different provider/model.';
+    } else if (err && err.status && err.status >= 500) {
+      msg = `Provider server error (${err.status}). The provider is having issues — try again in a moment.`;
+    } else if (err && err.code === 'ENOTFOUND') {
+      msg = `Network error: could not reach "${err.hostname || 'the provider'}". Check your internet connection or Base URL in Settings.`;
+    } else if (err && err.code === 'ECONNREFUSED') {
+      msg = `Connection refused. If using Ollama, make sure it's running locally.`;
+    }
     return {
       ok: false,
       step: convoState.step,
       nextStep: convoState.step,
       assistant: '',
-      error: err && err.message ? err.message : String(err),
+      error: msg,
     };
   }
 });
