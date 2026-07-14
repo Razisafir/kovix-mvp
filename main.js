@@ -78,9 +78,12 @@ const STEP_LABELS = {
 };
 
 // Directories to hide from the file tree.
-const IGNORED_DIRS = new Set(['node_modules', '.git', '.svn', '.hg', 'dist', 'build', '.cache']);
+const IGNORED_DIRS = new Set(['node_modules', '.git', '.svn', '.hg', 'dist', 'build', '.cache', '.kovix']);
 // Max file size we will read into the viewer (8 MB) to avoid OOM on big binaries.
 const MAX_READ_BYTES = 8 * 1024 * 1024;
+// How deep buildTree recurses. Big enough for real project layouts; deep enough
+// that clicking a subfolder reveals its contents without another IPC round-trip.
+const TREE_MAX_DEPTH = 6;
 
 /* -------------------------------------------------------------------------- */
 /* Settings persistence                                                       */
@@ -535,17 +538,164 @@ async function readTextFile(filePath) {
 const convoState = {
   step: 'idea',
   messages: [], // [{role:'system'|'user'|'assistant', content:string}]
+  sessionId: null, // current session id (null = unsaved / new)
+  startedAt: null, // ISO timestamp when the session was first created
 };
 
 function resetConvo() {
   convoState.step = 'idea';
   convoState.messages = [];
+  convoState.sessionId = null;
+  convoState.startedAt = null;
 }
 
 function advanceStep(current) {
   const idx = STEPS.indexOf(current);
   if (idx === -1) return 'idea';
   return STEPS[Math.min(idx + 1, STEPS.length - 1)];
+}
+
+/* -------------------------------------------------------------------------- */
+/* Session persistence                                                        */
+/* -------------------------------------------------------------------------- */
+//
+// Sessions are stored as JSON files inside the active workspace under
+// `.kovix/sessions/<id>.json`. Each file is a self-contained transcript:
+//   {
+//     id, startedAt, updatedAt, step,
+//     title,            // first user message (truncated)
+//     messages: [...]   // full role/content history
+//   }
+//
+// This means sessions travel with the workspace — clone it, share it, the
+// conversation history comes with it. No external database needed.
+
+const SESSIONS_DIR_NAME = '.kovix';
+const SESSIONS_SUBDIR = 'sessions';
+
+function getSessionsDir() {
+  const ws = getActiveWorkspace();
+  if (!ws) return '';
+  return path.join(ws, SESSIONS_DIR_NAME, SESSIONS_SUBDIR);
+}
+
+function ensureSessionsDir() {
+  const dir = getSessionsDir();
+  if (!dir) return '';
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  } catch (err) {
+    console.error('Failed to create sessions dir:', err);
+    return '';
+  }
+}
+
+function genSessionId() {
+  // YYYYMMDD-HHMMSS-xxxx — sortable + collision-resistant
+  const d = new Date();
+  const pad = (n, l = 2) => String(n).padStart(l, '0');
+  const rand = Math.random().toString(36).slice(2, 6);
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}` +
+         `-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}-${rand}`;
+}
+
+function sessionTitleFromMessages(messages) {
+  const firstUser = messages.find((m) => m.role === 'user');
+  if (!firstUser) return 'Untitled session';
+  const t = (firstUser.content || '').trim().replace(/\s+/g, ' ');
+  return t.length > 60 ? t.slice(0, 57) + '…' : (t || 'Untitled session');
+}
+
+function saveCurrentSession() {
+  if (!convoState.messages.some((m) => m.role !== 'system')) return null;
+  const dir = ensureSessionsDir();
+  if (!dir) return null;
+  if (!convoState.sessionId) {
+    convoState.sessionId = genSessionId();
+    convoState.startedAt = new Date().toISOString();
+  }
+  const session = {
+    id: convoState.sessionId,
+    startedAt: convoState.startedAt,
+    updatedAt: new Date().toISOString(),
+    step: convoState.step,
+    title: sessionTitleFromMessages(convoState.messages),
+    messages: convoState.messages.slice(),
+  };
+  try {
+    fs.writeFileSync(path.join(dir, `${convoState.sessionId}.json`), JSON.stringify(session, null, 2), 'utf8');
+    return session;
+  } catch (err) {
+    console.error('Failed to save session:', err);
+    return null;
+  }
+}
+
+function listSessions() {
+  const dir = getSessionsDir();
+  if (!dir || !fs.existsSync(dir)) return [];
+  try {
+    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
+    const sessions = [];
+    for (const f of files) {
+      try {
+        const raw = fs.readFileSync(path.join(dir, f), 'utf8');
+        const s = JSON.parse(raw);
+        if (s && s.id && Array.isArray(s.messages)) {
+          sessions.push({
+            id: s.id,
+            startedAt: s.startedAt || '',
+            updatedAt: s.updatedAt || '',
+            step: s.step || 'idea',
+            title: s.title || sessionTitleFromMessages(s.messages) || 'Untitled session',
+            messageCount: s.messages.filter((m) => m.role !== 'system').length,
+          });
+        }
+      } catch (_) { /* skip corrupt files */ }
+    }
+    // Newest first
+    sessions.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+    return sessions;
+  } catch (err) {
+    console.error('listSessions error:', err);
+    return [];
+  }
+}
+
+function loadSession(id) {
+  const dir = getSessionsDir();
+  if (!dir) return null;
+  const file = path.join(dir, `${id}.json`);
+  if (!fs.existsSync(file)) return null;
+  try {
+    const raw = fs.readFileSync(file, 'utf8');
+    const s = JSON.parse(raw);
+    if (!s || !s.id || !Array.isArray(s.messages)) return null;
+    convoState.sessionId = s.id;
+    convoState.startedAt = s.startedAt || new Date().toISOString();
+    convoState.step = s.step || 'idea';
+    convoState.messages = s.messages.slice();
+    return s;
+  } catch (err) {
+    console.error('loadSession error:', err);
+    return null;
+  }
+}
+
+function deleteSession(id) {
+  const dir = getSessionsDir();
+  if (!dir) return false;
+  const file = path.join(dir, `${id}.json`);
+  try {
+    if (fs.existsSync(file)) fs.unlinkSync(file);
+    // If we just deleted the active session, reset convo state too.
+    if (convoState.sessionId === id) resetConvo();
+    return true;
+  } catch (err) {
+    console.error('deleteSession error:', err);
+    return false;
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -646,7 +796,7 @@ ipcMain.handle('fs:get-tree', async () => {
     if (!fs.existsSync(ws) || !fs.statSync(ws).isDirectory()) {
       return { ok: false, error: 'Workspace path is not a directory.' };
     }
-    const tree = await buildTree(ws, 2); // 2 levels deep: root + immediate children + one level into subdirs
+    const tree = await buildTree(ws, TREE_MAX_DEPTH);
     return { ok: true, root: ws, tree };
   } catch (err) {
     console.error('fs:get-tree error:', err);
@@ -781,6 +931,8 @@ ipcMain.handle('send-message', async (_evt, req) => {
         fs.writeFileSync(outPath, code, 'utf8');
         // Tell the renderer to refresh its file tree.
         notifyTreeChanged(filename);
+        // Persist the session transcript.
+        const saved = saveCurrentSession();
         return {
           ok: true,
           step: currentStep,
@@ -790,6 +942,7 @@ ipcMain.handle('send-message', async (_evt, req) => {
           wroteFile: true,
           writtenPath: outPath,
           writtenName: filename,
+          session: saved ? { id: saved.id, title: saved.title } : null,
         };
       } catch (writeErr) {
         console.error('write output file failed:', writeErr);
@@ -805,11 +958,13 @@ ipcMain.handle('send-message', async (_evt, req) => {
 
     // Non-execute steps: advance and let the renderer show the assistant text.
     convoState.step = nextStep;
+    const saved = saveCurrentSession();
     return {
       ok: true,
       step: currentStep,
       nextStep,
       assistant: assistantText,
+      session: saved ? { id: saved.id, title: saved.title } : null,
     };
   } catch (err) {
     console.error('send-message error:', err);
@@ -820,6 +975,68 @@ ipcMain.handle('send-message', async (_evt, req) => {
       assistant: '',
       error: err && err.message ? err.message : String(err),
     };
+  }
+});
+
+/* -------------------------------------------------------------------------- */
+/* IPC handlers — Sessions                                                    */
+/* -------------------------------------------------------------------------- */
+
+ipcMain.handle('sessions:list', async () => {
+  try {
+    return { ok: true, sessions: listSessions() };
+  } catch (err) {
+    console.error('sessions:list error:', err);
+    return { ok: false, error: err.message, sessions: [] };
+  }
+});
+
+ipcMain.handle('sessions:load', async (_evt, id) => {
+  try {
+    if (typeof id !== 'string' || !id) {
+      throw new Error('Session id required.');
+    }
+    const s = loadSession(id);
+    if (!s) {
+      return { ok: false, error: 'Session not found.' };
+    }
+    return {
+      ok: true,
+      session: {
+        id: s.id,
+        startedAt: s.startedAt,
+        updatedAt: s.updatedAt,
+        step: s.step,
+        title: s.title,
+        messages: s.messages,
+      },
+    };
+  } catch (err) {
+    console.error('sessions:load error:', err);
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('sessions:delete', async (_evt, id) => {
+  try {
+    if (typeof id !== 'string' || !id) {
+      throw new Error('Session id required.');
+    }
+    const ok = deleteSession(id);
+    return { ok };
+  } catch (err) {
+    console.error('sessions:delete error:', err);
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('sessions:new', async () => {
+  try {
+    resetConvo();
+    return { ok: true, step: convoState.step };
+  } catch (err) {
+    console.error('sessions:new error:', err);
+    return { ok: false, error: err.message };
   }
 });
 
@@ -834,7 +1051,13 @@ ipcMain.handle('reset-convo', async () => {
 });
 
 ipcMain.handle('get-convo-state', async () => {
-  return { step: convoState.step, labels: STEP_LABELS, workspace: getActiveWorkspace() };
+  return {
+    step: convoState.step,
+    labels: STEP_LABELS,
+    workspace: getActiveWorkspace(),
+    sessionId: convoState.sessionId,
+    startedAt: convoState.startedAt,
+  };
 });
 
 /* -------------------------------------------------------------------------- */

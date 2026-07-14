@@ -76,6 +76,11 @@ const els = {
   openFolderBtn: $('#open-folder-btn'),
   fileTree:      $('#file-tree'),
 
+  // Sidebar — chat history
+  historyList:        $('#history-list'),
+  newSessionBtn:      $('#new-session-btn'),
+  refreshHistoryBtn:  $('#refresh-history-btn'),
+
   // Chat
   messages:     $('#messages'),
   welcome:      $('#welcome'),
@@ -112,6 +117,7 @@ const state = {
   activeWorkspace: '',
   selectedFilePath: '',
   busy: false,
+  currentSessionId: null,
 };
 
 /* -------------------------------------------------------------------------- */
@@ -295,12 +301,18 @@ function fileIconName(name, isDir) {
 function renderTree(node, depth = 0) {
   const wrap = document.createDocumentFragment();
   const row = document.createElement('div');
-  row.className = 'tree-node';
+  row.className = 'tree-node' + (node.type === 'dir' ? ' is-dir' : '');
   row.dataset.path = node.path;
   row.dataset.type = node.type;
   row.dataset.name = node.name;
   const iconName = fileIconName(node.name, node.type === 'dir');
+  const hasChildren = node.type === 'dir' && Array.isArray(node.children) && node.children.length > 0;
+  // Chevron only shows for directories that actually have children.
+  const chevron = hasChildren
+    ? '<span class="tree-chevron"><span class="material-symbols-outlined">expand_more</span></span>'
+    : '<span class="tree-chevron"></span>';
   row.innerHTML =
+    chevron +
     `<span class="material-symbols-outlined">${escapeHtml(iconName)}</span>` +
     `<span class="tree-name">${escapeHtml(node.name)}</span>`;
   wrap.appendChild(row);
@@ -320,14 +332,21 @@ function renderTree(node, depth = 0) {
       err.textContent = `⚠ ${node.error}`;
       children.appendChild(err);
     }
-    if (depth > 0 && node.children && node.children.length === 0) {
+    // Collapsed by default for nested empty folders; expanded for non-empty
+    // ones so users can drill down. Top level (depth 0) always starts expanded.
+    if (depth > 0 && !hasChildren) {
       children.classList.add('collapsed');
+      const ch = row.querySelector('.tree-chevron');
+      if (ch) ch.classList.add('collapsed');
     }
     wrap.appendChild(children);
 
     row.addEventListener('click', (e) => {
       e.stopPropagation();
+      const willCollapse = !children.classList.contains('collapsed');
       children.classList.toggle('collapsed');
+      const ch = row.querySelector('.tree-chevron');
+      if (ch) ch.classList.toggle('collapsed', willCollapse);
     });
   } else {
     row.addEventListener('click', (e) => {
@@ -458,6 +477,12 @@ async function handleOpenFolder() {
     }
     updateWorkspacePill(res.path);
     await refreshFileTree();
+    // Reset the active session (it belonged to the previous workspace, if any)
+    state.currentSessionId = null;
+    await window.kovix.newSession();
+    clearChatUI();
+    setActiveStep('idea');
+    refreshHistory();
   } catch (err) {
     showError(err && err.message ? err.message : String(err));
   }
@@ -578,9 +603,12 @@ async function handleSend() {
     if (res.error) showError(res.error);
     if (res.info)  showInfo(res.info);
     if (res.nextStep) setActiveStep(res.nextStep);
+    if (res.session && res.session.id) state.currentSessionId = res.session.id;
     if (res.wroteFile && res.writtenPath) {
       await refreshFileTree(res.writtenPath);
     }
+    // Refresh the history list so the new/updated session shows up.
+    refreshHistory();
   } catch (err) {
     showError(err && err.message ? err.message : String(err));
   } finally {
@@ -594,23 +622,139 @@ async function handleSend() {
 
 async function handleReset() {
   try {
-    await window.kovix.resetConvo();
-    els.messages.innerHTML = '';
-    // Rebuild the welcome node since we cleared it
-    const welcome = document.createElement('div');
-    welcome.id = 'welcome';
-    welcome.className = 'welcome';
-    welcome.innerHTML =
-      '<div class="welcome-icon"><span class="material-symbols-outlined">lightbulb</span></div>' +
-      '<h1 class="welcome-title">Project Ideation</h1>' +
-      '<p class="welcome-sub">Describe your concept, and I\'ll help structure the initial architecture and requirements.</p>';
-    els.messages.appendChild(welcome);
-    els.welcome = welcome;
+    await window.kovix.newSession();
+    state.currentSessionId = null;
+    clearChatUI();
     setActiveStep('idea');
     clearError();
     clearInfo();
+    refreshHistory();
   } catch (err) {
     showError(err && err.message ? err.message : String(err));
+  }
+}
+
+function clearChatUI() {
+  els.messages.innerHTML = '';
+  const welcome = document.createElement('div');
+  welcome.id = 'welcome';
+  welcome.className = 'welcome';
+  welcome.innerHTML =
+    '<div class="welcome-icon"><span class="material-symbols-outlined">lightbulb</span></div>' +
+    '<h1 class="welcome-title">Project Ideation</h1>' +
+    '<p class="welcome-sub">Describe your concept, and I\'ll help structure the initial architecture and requirements.</p>';
+  els.messages.appendChild(welcome);
+  els.welcome = welcome;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Chat history                                                               */
+/* -------------------------------------------------------------------------- */
+
+function formatSessionDate(iso) {
+  if (!iso) return '';
+  try {
+    const d = new Date(iso);
+    const now = new Date();
+    const sameDay = d.toDateString() === now.toDateString();
+    if (sameDay) {
+      return 'Today ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+    const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
+    if (d.toDateString() === yesterday.toDateString()) {
+      return 'Yesterday ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+    return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  } catch (_) { return iso; }
+}
+
+async function refreshHistory() {
+  if (!state.activeWorkspace) {
+    els.historyList.innerHTML =
+      '<div class="history-empty"><span class="material-symbols-outlined">forum</span><span>Open a folder to save chats</span></div>';
+    return;
+  }
+  let res;
+  try { res = await window.kovix.listSessions(); }
+  catch (err) {
+    els.historyList.innerHTML =
+      `<div class="history-empty"><span class="material-symbols-outlined">error</span><span>${escapeHtml(err.message || String(err))}</span></div>`;
+    return;
+  }
+  if (!res.ok || !Array.isArray(res.sessions) || res.sessions.length === 0) {
+    els.historyList.innerHTML =
+      '<div class="history-empty"><span class="material-symbols-outlined">forum</span><span>No saved chats yet</span></div>';
+    return;
+  }
+  els.historyList.innerHTML = '';
+  for (const s of res.sessions) {
+    const item = document.createElement('div');
+    item.className = 'history-item' + (s.id === state.currentSessionId ? ' active' : '');
+    item.dataset.id = s.id;
+    item.innerHTML =
+      '<span class="history-icon"><span class="material-symbols-outlined">chat_bubble</span></span>' +
+      '<div class="history-text">' +
+        `<div class="history-title">${escapeHtml(s.title || 'Untitled session')}</div>` +
+        `<div class="history-meta">${escapeHtml(formatSessionDate(s.updatedAt || s.startedAt))} · ${s.messageCount || 0} msgs · ${escapeHtml(s.step || 'idea')}</div>` +
+      '</div>' +
+      '<button class="history-delete" title="Delete chat" aria-label="Delete chat"><span class="material-symbols-outlined">delete</span></button>';
+
+    item.addEventListener('click', (e) => {
+      // Don't trigger load if they clicked delete
+      if (e.target.closest('.history-delete')) return;
+      loadSessionIntoUI(s.id);
+    });
+    item.querySelector('.history-delete').addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const ok = confirm(`Delete this chat?\n\n"${s.title || 'Untitled session'}"`);
+      if (!ok) return;
+      try {
+        await window.kovix.deleteSession(s.id);
+        if (state.currentSessionId === s.id) {
+          state.currentSessionId = null;
+          await window.kovix.newSession();
+          clearChatUI();
+          setActiveStep('idea');
+        }
+        refreshHistory();
+      } catch (err) {
+        showError(err && err.message ? err.message : String(err));
+      }
+    });
+
+    els.historyList.appendChild(item);
+  }
+}
+
+async function loadSessionIntoUI(id) {
+  if (!id) return;
+  setBusy(true);
+  try {
+    const res = await window.kovix.loadSession(id);
+    if (!res.ok || !res.session) {
+      showError(res.error || 'Failed to load session.');
+      return;
+    }
+    const s = res.session;
+    state.currentSessionId = s.id;
+    // Rebuild the chat UI with the loaded messages
+    els.messages.innerHTML = '';
+    els.welcome = null;
+    let sawAny = false;
+    for (const m of (s.messages || [])) {
+      if (m.role === 'system') continue;
+      if (m.role === 'user') { appendUserMessage(m.content); sawAny = true; }
+      else if (m.role === 'assistant') { appendAiMessage(m.content); sawAny = true; }
+    }
+    if (!sawAny) clearChatUI();
+    setActiveStep(s.step || 'idea');
+    clearError();
+    showInfo(`Resumed session: ${s.title || 'Untitled'}`);
+    refreshHistory();
+  } catch (err) {
+    showError(err && err.message ? err.message : String(err));
+  } finally {
+    setBusy(false);
   }
 }
 
@@ -642,6 +786,10 @@ function bindEvents() {
   // Reset / new project
   els.resetBtn.addEventListener('click', handleReset);
   if (els.newProjectBtn) els.newProjectBtn.addEventListener('click', handleReset);
+
+  // Chat history
+  if (els.newSessionBtn)     els.newSessionBtn.addEventListener('click', handleReset);
+  if (els.refreshHistoryBtn) els.refreshHistoryBtn.addEventListener('click', () => refreshHistory());
 
   // Settings modal
   els.settingsBtn.addEventListener('click', openSettings);
@@ -691,6 +839,7 @@ async function init() {
     updateStatusCard(s);
     updateWorkspacePill(s.activeWorkspace || '');
     if (s.activeWorkspace) await refreshFileTree();
+    refreshHistory();
   } catch (err) {
     showError(err && err.message ? err.message : String(err));
   }

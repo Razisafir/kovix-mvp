@@ -21,6 +21,12 @@ contextBridge.exposeInMainWorld('kovix', {
   resetConvo:     () => ipcRenderer.invoke('reset-convo'),
   getConvoState:  () => ipcRenderer.invoke('get-convo-state'),
 
+  /* ---------------- Sessions ------------------------- */
+  listSessions:   () => ipcRenderer.invoke('sessions:list'),
+  loadSession:    (id) => ipcRenderer.invoke('sessions:load', id),
+  deleteSession:  (id) => ipcRenderer.invoke('sessions:delete', id),
+  newSession:     () => ipcRenderer.invoke('sessions:new'),
+
   /* ---------------- Workspace & files ---------------- */
   openFolder:  () => ipcRenderer.invoke('dialog:open-folder'),
   getWorkspace: () => ipcRenderer.invoke('fs:get-workspace'),
