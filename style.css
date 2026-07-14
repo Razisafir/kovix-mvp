@@ -359,6 +359,15 @@ input, select, textarea { font-family: inherit; }
   display: flex; flex-direction: column; gap: 4px;
 }
 .status-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.status-row.version-row {
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--outline-variant);
+}
+.status-row.version-row #ui-version {
+  color: var(--primary);
+  font-weight: 600;
+}
 .label-sm {
   font-family: var(--font-label);
   font-size: 12px;

@@ -20,7 +20,7 @@
  * always receives a structured error string instead of crashing the app.
  */
 
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, session } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsp = require('fs').promises;
@@ -865,7 +865,21 @@ function createWindow() {
   });
 }
 
-app.whenReady().then(() => {
+// Disable HTTP cache via command-line switch (helps during development so
+// changes to index.html / style.css / renderer.js are always picked up).
+app.commandLine.appendSwitch('disable-http-cache');
+app.disableHardwareAccelerationMode = false;
+
+app.whenReady().then(async () => {
+  // Clear the session cache so stale renderer files don't get loaded.
+  try {
+    await session.defaultSession.clearCache();
+    await session.defaultSession.clearStorageData({
+      storages: ['shadercache', 'serviceworkers', 'cachestorage'],
+    });
+  } catch (err) {
+    console.error('Failed to clear session cache:', err);
+  }
   createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
