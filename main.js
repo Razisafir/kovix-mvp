@@ -686,8 +686,13 @@ const SESSIONS_SUBDIR = 'sessions';
 
 async function getSessionsDir() {
   const ws = await getActiveWorkspace();
-  if (!ws) return '';
-  return path.join(ws, SESSIONS_DIR_NAME, SESSIONS_SUBDIR);
+  if (!ws) {
+    console.log('[sessions] getSessionsDir: no active workspace');
+    return '';
+  }
+  const dir = path.join(ws, SESSIONS_DIR_NAME, SESSIONS_SUBDIR);
+  console.log('[sessions] dir =', dir);
+  return dir;
 }
 
 async function ensureSessionsDir() {
@@ -695,9 +700,10 @@ async function ensureSessionsDir() {
   if (!dir) return '';
   try {
     await fsp.mkdir(dir, { recursive: true });
+    console.log('[sessions] ensured dir exists:', dir);
     return dir;
   } catch (err) {
-    console.error('Failed to create sessions dir:', err);
+    console.error('[sessions] Failed to create sessions dir:', dir, err);
     return '';
   }
 }
@@ -719,9 +725,15 @@ function sessionTitleFromMessages(messages) {
 }
 
 async function saveCurrentSession() {
-  if (!convoState.messages.some((m) => m.role !== 'system')) return null;
+  if (!convoState.messages.some((m) => m.role !== 'system')) {
+    console.log('[sessions] save: skipped (no non-system messages)');
+    return null;
+  }
   const dir = await ensureSessionsDir();
-  if (!dir) return null;
+  if (!dir) {
+    console.log('[sessions] save: no dir available, cannot save');
+    return null;
+  }
   if (!convoState.sessionId) {
     convoState.sessionId = genSessionId();
     convoState.startedAt = new Date().toISOString();
@@ -735,10 +747,12 @@ async function saveCurrentSession() {
     messages: convoState.messages.slice(),
   };
   try {
-    await fsp.writeFile(path.join(dir, `${convoState.sessionId}.json`), JSON.stringify(session, null, 2), 'utf8');
+    const filePath = path.join(dir, `${convoState.sessionId}.json`);
+    await fsp.writeFile(filePath, JSON.stringify(session, null, 2), 'utf8');
+    console.log('[sessions] saved:', filePath, '(', session.messages.length, 'messages )');
     return session;
   } catch (err) {
-    console.error('Failed to save session:', err);
+    console.error('[sessions] save FAILED:', err);
     return null;
   }
 }
@@ -747,9 +761,13 @@ async function listSessions() {
   const dir = await getSessionsDir();
   if (!dir) return [];
   try {
-    if (!fs.existsSync(dir)) return [];
+    if (!fs.existsSync(dir)) {
+      console.log('[sessions] list: dir does not exist yet:', dir);
+      return [];
+    }
     const entries = await fsp.readdir(dir);
     const files = entries.filter((f) => f.endsWith('.json'));
+    console.log('[sessions] list: found', files.length, 'session files in', dir);
     const sessions = [];
     for (const f of files) {
       try {
@@ -1095,6 +1113,10 @@ ipcMain.handle('send-message', async (_evt, req) => {
     }
 
     convoState.messages.push({ role: 'user', content: userText });
+
+    // SAVE the session immediately (with just the user message) so the
+    // conversation is recorded even if the LLM call fails or times out.
+    await saveCurrentSession();
 
     // Call the LLM — mark busy so concurrent calls are rejected.
     llmBusy = true;

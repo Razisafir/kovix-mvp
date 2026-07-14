@@ -826,6 +826,7 @@ function formatSessionDate(iso) {
 }
 
 async function refreshHistory() {
+  console.log('[history] refreshHistory called, activeWorkspace =', state.activeWorkspace);
   if (!state.activeWorkspace) {
     els.historyList.innerHTML =
       '<div class="history-empty"><span class="material-symbols-outlined">forum</span><span>Open a folder to save chats</span></div>';
@@ -834,15 +835,18 @@ async function refreshHistory() {
   let res;
   try { res = await window.kovix.listSessions(); }
   catch (err) {
+    console.error('[history] listSessions threw:', err);
     els.historyList.innerHTML =
       `<div class="history-empty"><span class="material-symbols-outlined">error</span><span>${escapeHtml(err.message || String(err))}</span></div>`;
     return;
   }
+  console.log('[history] listSessions returned:', res);
   if (!res.ok || !Array.isArray(res.sessions) || res.sessions.length === 0) {
     els.historyList.innerHTML =
       '<div class="history-empty"><span class="material-symbols-outlined">forum</span><span>No saved chats yet</span></div>';
     return;
   }
+  console.log('[history] rendering', res.sessions.length, 'sessions');
   els.historyList.innerHTML = '';
   for (const s of res.sessions) {
     const item = document.createElement('div');
@@ -961,6 +965,27 @@ function bindEvents() {
   els.fetchModelsBtn.addEventListener('click', handleFetchModels);
   els.saveSettingsBtn.addEventListener('click', handleSaveSettings);
   if (els.testConnectionBtn) els.testConnectionBtn.addEventListener('click', handleTestConnection);
+
+  // Auto-fetch models when the user tabs out of the API key field (if a
+  // provider is selected). Saves a click — just paste key, tab, models load.
+  els.apiKeyInput.addEventListener('blur', () => {
+    const provider = els.providerSel.value;
+    const apiKey = els.apiKeyInput.value.trim();
+    if (provider && apiKey && apiKey.length > 5) {
+      // Only auto-fetch if the model dropdown is still empty/disabled.
+      if (els.modelSel.disabled || !els.modelSel.value) {
+        handleFetchModels();
+      }
+    }
+  });
+
+  // Also auto-fetch on Enter in the API key field.
+  els.apiKeyInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      els.apiKeyInput.blur();
+    }
+  });
 
   // Provider change → reset model dropdown + update baseUrl placeholder
   els.providerSel.addEventListener('change', () => {
