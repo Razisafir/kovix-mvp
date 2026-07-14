@@ -50,6 +50,7 @@ const DEFAULT_BASE_URLS = {
   ollama: 'http://localhost:11434/v1',
   gemini: 'https://generativelanguage.googleapis.com',
   nvidia: 'https://integrate.api.nvidia.com/v1',
+  zai: 'https://api.z.ai/api/paas/v4',
 };
 
 /**
@@ -155,7 +156,8 @@ async function fetchModels(cfg) {
   switch (provider) {
     case 'openai':
     case 'openrouter':
-    case 'nvidia': {
+    case 'nvidia':
+    case 'zai': {
       if (!apiKey) throw new Error(`API key is required for ${provider}.`);
       const url = `${baseUrl || DEFAULT_BASE_URLS[provider]}/models`;
       const res = await fetch(url, {
@@ -280,7 +282,8 @@ async function callLLM(settings, messages) {
     case 'openai':
     case 'openrouter':
     case 'ollama':
-    case 'nvidia': {
+    case 'nvidia':
+    case 'zai': {
       if (provider !== 'ollama' && !apiKey) {
         throw new Error(`API key is required for ${provider}.`);
       }

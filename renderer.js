@@ -983,6 +983,7 @@ function bindEvents() {
       ollama:     'http://localhost:11434',
       gemini:     'https://generativelanguage.googleapis.com',
       nvidia:     'https://integrate.api.nvidia.com/v1',
+      zai:        'https://api.z.ai/api/paas/v4',
     };
     els.baseUrlInput.placeholder = hints[els.providerSel.value] || '';
   });
