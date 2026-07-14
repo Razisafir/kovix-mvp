@@ -287,14 +287,24 @@ function updateWorkspacePill(path) {
 function fileIconName(name, isDir) {
   if (isDir) return 'folder';
   const ext = (name.split('.').pop() || '').toLowerCase();
-  if (['html', 'htm'].includes(ext)) return 'html';
-  if (['js', 'mjs', 'cjs', 'jsx'].includes(ext)) return 'javascript';
-  if (['ts', 'tsx'].includes(ext)) return 'javascript'; // no TS icon in material symbols; reuse
-  if (['css', 'scss', 'sass'].includes(ext)) return 'css';
-  if (['json'].includes(ext)) return 'json';
-  if (['md', 'markdown'].includes(ext)) return 'description';
-  if (['py'].includes(ext)) return 'code';
+  // NOTE: avoid Material Symbols "word-mark" ligatures like 'json', 'html',
+  // 'css', 'javascript' — they render as wide multi-letter glyphs that break
+  // the tree row layout. Use square single-glyph icons instead.
+  if (['html', 'htm'].includes(ext)) return 'code';
+  if (['js', 'mjs', 'cjs', 'jsx'].includes(ext)) return 'code';
+  if (['ts', 'tsx'].includes(ext)) return 'code';
+  if (['css', 'scss', 'sass'].includes(ext)) return 'palette';
+  if (['json'].includes(ext)) return 'data_object';
+  if (['md', 'markdown'].includes(ext)) return 'article';
+  if (['py'].includes(ext)) return 'terminal';
   if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'].includes(ext)) return 'image';
+  if (['txt'].includes(ext)) return 'description';
+  if (['env'].includes(ext)) return 'key';
+  if (['lock'].includes(ext)) return 'lock';
+  if (['yml', 'yaml'].includes(ext)) return 'settings';
+  if (['xml'].includes(ext)) return 'code';
+  if (['sql'].includes(ext)) return 'storage';
+  if (['sh', 'bash'].includes(ext)) return 'terminal';
   return 'description';
 }
 
@@ -817,6 +827,7 @@ function bindEvents() {
       anthropic:  'https://api.anthropic.com',
       ollama:     'http://localhost:11434',
       gemini:     'https://generativelanguage.googleapis.com',
+      nvidia:     'https://integrate.api.nvidia.com/v1',
     };
     els.baseUrlInput.placeholder = hints[els.providerSel.value] || '';
   });

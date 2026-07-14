@@ -49,6 +49,7 @@ const DEFAULT_BASE_URLS = {
   anthropic: 'https://api.anthropic.com',
   ollama: 'http://localhost:11434/v1',
   gemini: 'https://generativelanguage.googleapis.com',
+  nvidia: 'https://integrate.api.nvidia.com/v1',
 };
 
 /**
@@ -148,7 +149,8 @@ async function fetchModels(cfg) {
 
   switch (provider) {
     case 'openai':
-    case 'openrouter': {
+    case 'openrouter':
+    case 'nvidia': {
       if (!apiKey) throw new Error(`API key is required for ${provider}.`);
       const url = `${baseUrl || DEFAULT_BASE_URLS[provider]}/models`;
       const res = await fetch(url, {
@@ -257,7 +259,8 @@ async function callLLM(settings, messages) {
   switch (provider) {
     case 'openai':
     case 'openrouter':
-    case 'ollama': {
+    case 'ollama':
+    case 'nvidia': {
       if (provider !== 'ollama' && !apiKey) {
         throw new Error(`API key is required for ${provider}.`);
       }

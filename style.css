@@ -398,7 +398,22 @@ input, select, textarea { font-family: inherit; }
   color: var(--primary);
   font-weight: 500;
 }
-.tree-node .material-symbols-outlined { font-size: 18px; color: inherit; opacity: 0.85; flex: 0 0 18px; }
+.tree-node .material-symbols-outlined {
+  font-size: 18px;
+  color: inherit;
+  opacity: 0.85;
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+  overflow: hidden;
+  /* Prevent wide word-mark ligatures (like the old 'json' glyph) from
+     stretching the icon and breaking the row layout. */
+  text-overflow: clip;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
 .tree-node .tree-name {
   /* flex:1 + min-width:0 = the magic combo that lets a flex child
      ellipsis its text instead of growing to fit the full string. */
