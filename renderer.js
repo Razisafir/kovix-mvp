@@ -121,6 +121,26 @@ const state = {
   currentSessionId: null,
 };
 
+// --- Module-level watchdog ---
+// Only ONE watchdog can exist at a time. Previous watchdogs are cleared at
+// the start of each handleSend() so a stale timer from a previous (failed)
+// message can never fire and cancel the new one.
+let watchdogTimer = null;
+let watchdogFired = false;
+let watchdogUnsubscribeDelta = null;
+
+function clearWatchdog() {
+  if (watchdogTimer) { clearTimeout(watchdogTimer); watchdogTimer = null; }
+}
+
+function stopWatchdog() {
+  clearWatchdog();
+  if (watchdogUnsubscribeDelta) {
+    watchdogUnsubscribeDelta();
+    watchdogUnsubscribeDelta = null;
+  }
+}
+
 /* -------------------------------------------------------------------------- */
 /* Step indicator + welcome header                                            */
 /* -------------------------------------------------------------------------- */
@@ -663,83 +683,58 @@ async function handleSend() {
     return;
   }
 
+  // CRITICAL: Clear any stale watchdog from a previous (failed) message.
+  // Without this, a 60s timer from the last attempt can fire during this
+  // new send and call cancelCurrent(), killing the new request.
+  stopWatchdog();
+  watchdogFired = false;
+
   appendUserMessage(text);
   els.input.value = '';
   autoResizeInput();
   setBusy(true);
 
   // --- Streaming setup ---
-  // Create a placeholder AI bubble that we'll fill as tokens arrive.
-  let streamingBubble = null;
-  let streamingText = '';
-  let firstDeltaReceived = false;
+  // These are captured by the delta handler closure below.
+  const sendCtx = {
+    streamingBubble: null,
+    streamingText: '',
+    firstDeltaReceived: false,
+  };
 
-  const unsubscribeDelta = window.kovix.onLLMDelta((payload) => {
+  watchdogUnsubscribeDelta = window.kovix.onLLMDelta((payload) => {
     if (!payload || !payload.delta) return;
-    if (!firstDeltaReceived) {
-      firstDeltaReceived = true;
-      // First token arrived — create the bubble and hide the welcome.
+    if (watchdogFired) return; // don't process deltas after watchdog fired
+    if (!sendCtx.firstDeltaReceived) {
+      sendCtx.firstDeltaReceived = true;
       hideWelcome();
-      streamingBubble = appendAiMessage('');
+      sendCtx.streamingBubble = appendAiMessage('');
       // Reset the watchdog since tokens are flowing.
-      resetWatchdog();
+      startWatchdog(sendCtx);
     }
-    streamingText += payload.delta;
-    if (streamingBubble) {
-      const bubble = streamingBubble.querySelector('.bubble');
-      if (bubble) bubble.innerHTML = renderMarkdown(streamingText);
+    sendCtx.streamingText += payload.delta;
+    if (sendCtx.streamingBubble) {
+      const bubble = sendCtx.streamingBubble.querySelector('.bubble');
+      if (bubble) bubble.innerHTML = renderMarkdown(sendCtx.streamingText);
       scrollMessagesToBottom();
     }
   });
 
-  // --- Watchdog (smart — resets on each delta) ---
-  // If no token arrives within 60s, OR if tokens stop flowing for 60s,
-  // we cancel and show an error. But as long as tokens are arriving,
-  // the watchdog keeps resetting, so a 2-minute response works fine.
-  let watchdogTimer = null;
-  let watchdogFired = false;
-  const WATCHDOG_MS = 60_000;
-
-  function startWatchdog() {
-    if (watchdogTimer) clearTimeout(watchdogTimer);
-    watchdogTimer = setTimeout(async () => {
-      watchdogFired = true;
-      unsubscribeDelta();
-      try { await window.kovix.cancelCurrent(); } catch (_) {}
-      setBusy(false);
-      if (!firstDeltaReceived) {
-        showError('No response received after 60s. The provider may be down or your API key may be invalid. Try the Test Connection button in Settings.');
-      } else {
-        showError('Response stream stalled for 60s. Partial text is shown above.');
-      }
-    }, WATCHDOG_MS);
-  }
-  function resetWatchdog() {
-    if (watchdogTimer && !watchdogFired) {
-      clearTimeout(watchdogTimer);
-      startWatchdog();
-    }
-  }
-  function stopWatchdog() {
-    if (watchdogTimer) { clearTimeout(watchdogTimer); watchdogTimer = null; }
-  }
-  startWatchdog();
+  // Start the initial watchdog (will be reset on each delta).
+  startWatchdog(sendCtx);
 
   try {
     const res = await window.kovix.sendMessage(text);
     stopWatchdog();
-    unsubscribeDelta();
 
     if (watchdogFired) return; // watchdog already recovered; ignore stale response
 
     // If we got deltas, the bubble already exists with the streamed text.
-    // If we DIDN'T get deltas (non-streaming path or empty), create the bubble now.
-    if (!firstDeltaReceived && res.assistant) {
+    // If we DIDN'T get deltas, create the bubble now with the full response.
+    if (!sendCtx.firstDeltaReceived && res.assistant) {
       appendAiMessage(res.assistant);
-    } else if (firstDeltaReceived && streamingBubble) {
-      // Finalize the streamed bubble with the complete text (in case the
-      // stream missed any trailing content).
-      const bubble = streamingBubble.querySelector('.bubble');
+    } else if (sendCtx.firstDeltaReceived && sendCtx.streamingBubble) {
+      const bubble = sendCtx.streamingBubble.querySelector('.bubble');
       if (bubble && res.assistant) {
         bubble.innerHTML = renderMarkdown(res.assistant);
       }
@@ -752,11 +747,9 @@ async function handleSend() {
     if (res.wroteFile && res.writtenPath) {
       await refreshFileTree(res.writtenPath);
     }
-    // Refresh the history list so the new/updated session shows up.
     refreshHistory();
   } catch (err) {
     stopWatchdog();
-    unsubscribeDelta();
     if (watchdogFired) return;
     showError(err && err.message ? err.message : String(err));
   } finally {
@@ -765,7 +758,38 @@ async function handleSend() {
   }
 }
 
+// --- Watchdog functions (module-level) ---
+//
+// The watchdog fires if NO token arrives within 60s, OR if tokens stop
+// flowing for 60s. As long as tokens are arriving, it keeps resetting.
+// A 2-minute response works fine because the user sees progress.
+//
+// CRITICAL: these use module-level variables so only ONE watchdog exists
+// at a time. handleSend() calls stopWatchdog() at the start to clear any
+// stale timer from a previous failed message.
+
+function startWatchdog(sendCtx) {
+  clearWatchdog();
+  const WATCHDOG_MS = 60_000;
+  watchdogTimer = setTimeout(async () => {
+    watchdogFired = true;
+    if (watchdogUnsubscribeDelta) {
+      watchdogUnsubscribeDelta();
+      watchdogUnsubscribeDelta = null;
+    }
+    try { await window.kovix.cancelCurrent(); } catch (_) {}
+    setBusy(false);
+    if (!sendCtx.firstDeltaReceived) {
+      showError('No response received after 60s. The provider may be down or your API key may be invalid. Try the Test Connection button in Settings.');
+    } else {
+      showError('Response stream stalled for 60s. Partial text is shown above.');
+    }
+  }, WATCHDOG_MS);
+}
+
 async function handleCancel() {
+  stopWatchdog();
+  watchdogFired = true;  // prevent any pending watchdog from firing
   try {
     await window.kovix.cancelCurrent();
   } catch (_) { /* ignore */ }
