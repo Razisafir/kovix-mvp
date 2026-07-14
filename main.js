@@ -311,12 +311,14 @@ async function callLLM(settings, messages) {
       // 40-60s on slow providers), we stream tokens as they arrive. The
       // renderer displays them in real-time, so the user sees progress
       // immediately and never wonders if the app is hung.
+      console.log('[callLLM] openai-sdk path: baseURL =', baseUrl || DEFAULT_BASE_URLS[provider], 'model =', model);
       const stream = await client.chat.completions.create({
         model,
         messages,
         temperature: 0.7,
         stream: true,
       });
+      console.log('[callLLM] stream started, waiting for chunks...');
       let text = '';
       for await (const chunk of stream) {
         const delta = chunk?.choices?.[0]?.delta?.content || '';
@@ -351,6 +353,7 @@ async function callLLM(settings, messages) {
       const timeout = setTimeout(() => ac.abort(), 120_000);
       let res;
       try {
+        console.log('[callLLM] anthropic path: url =', url, 'model =', model);
         res = await fetch(url, {
           method: 'POST',
           headers: {
@@ -368,11 +371,13 @@ async function callLLM(settings, messages) {
         }
         throw err;
       }
+      console.log('[callLLM] anthropic response status:', res.status);
       if (!res.ok) {
         clearTimeout(timeout);
         const errText = await safeReadText(res);
         throw new Error(`Anthropic /v1/messages returned ${res.status}: ${errText}`);
       }
+      console.log('[callLLM] anthropic stream started, reading body...');
       // Parse the SSE stream. Anthropic sends events like:
       //   event: content_block_delta
       //   data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}
@@ -1120,7 +1125,12 @@ ipcMain.handle('send-message', async (_evt, req) => {
 
     // Call the LLM — mark busy so concurrent calls are rejected.
     llmBusy = true;
-    console.log(logTag, 'calling LLM: provider =', settings.provider, 'model =', settings.model, 'msgs =', convoState.messages.length);
+    console.log(logTag, 'calling LLM:');
+    console.log(logTag, '  provider:', JSON.stringify(settings.provider));
+    console.log(logTag, '  model:   ', JSON.stringify(settings.model));
+    console.log(logTag, '  apiKey:  ', settings.apiKey ? settings.apiKey.slice(0, 8) + '...' : '(EMPTY)');
+    console.log(logTag, '  baseUrl: ', JSON.stringify(settings.baseUrl || DEFAULT_BASE_URLS[settings.provider] || '(none)'));
+    console.log(logTag, '  msgs:    ', convoState.messages.length);
     const callStart = Date.now();
     let assistantText;
     try {
