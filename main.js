@@ -303,12 +303,26 @@ async function callLLM(settings, messages) {
       // creates its own internal signal from the `timeout` option, and
       // passing a second signal conflicts with it, causing spurious
       // "Request was aborted" errors. The SDK's own timeout is sufficient.
-      const completion = await client.chat.completions.create({
+      //
+      // STREAMING: instead of waiting for the full response (which can take
+      // 40-60s on slow providers), we stream tokens as they arrive. The
+      // renderer displays them in real-time, so the user sees progress
+      // immediately and never wonders if the app is hung.
+      const stream = await client.chat.completions.create({
         model,
         messages,
         temperature: 0.7,
+        stream: true,
       });
-      const text = completion?.choices?.[0]?.message?.content;
+      let text = '';
+      for await (const chunk of stream) {
+        const delta = chunk?.choices?.[0]?.delta?.content || '';
+        if (delta) {
+          text += delta;
+          // Send each delta to the renderer for live display.
+          sendToRenderer('llm:delta', { delta });
+        }
+      }
       if (!text) throw new Error('LLM returned an empty response.');
       return text;
     }
@@ -325,10 +339,13 @@ async function callLLM(settings, messages) {
         model,
         max_tokens: 4096,
         messages: userTurns,
+        stream: true,  // STREAMING — tokens arrive as they're generated
       };
       if (sysMsg) body.system = sysMsg.content;
       const ac = new AbortController();
-      const timeout = setTimeout(() => ac.abort(), 40_000);
+      // Longer timeout for streaming: the first token should arrive in 1-5s,
+      // but the full response can take 60s+. We set 120s as the hard cap.
+      const timeout = setTimeout(() => ac.abort(), 120_000);
       let res;
       try {
         res = await fetch(url, {
@@ -344,7 +361,7 @@ async function callLLM(settings, messages) {
       } catch (err) {
         clearTimeout(timeout);
         if (err && err.name === 'AbortError') {
-          throw new Error('Anthropic request timed out after 40s.');
+          throw new Error('Anthropic request timed out after 120s.');
         }
         throw err;
       }
@@ -353,11 +370,40 @@ async function callLLM(settings, messages) {
         const errText = await safeReadText(res);
         throw new Error(`Anthropic /v1/messages returned ${res.status}: ${errText}`);
       }
-      const data = await res.json();
-      clearTimeout(timeout);
-      const text = Array.isArray(data?.content)
-        ? data.content.map((c) => c?.text || '').join('')
-        : '';
+      // Parse the SSE stream. Anthropic sends events like:
+      //   event: content_block_delta
+      //   data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}
+      let text = '';
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          // Split on double newlines (SSE event delimiter)
+          const events = buffer.split('\n\n');
+          buffer = events.pop() || ''; // keep the last partial event
+          for (const evt of events) {
+            const lines = evt.split('\n');
+            for (const line of lines) {
+              if (!line.startsWith('data: ')) continue;
+              const jsonStr = line.slice(6).trim();
+              if (!jsonStr || jsonStr === '[DONE]') continue;
+              try {
+                const data = JSON.parse(jsonStr);
+                if (data.type === 'content_block_delta' && data.delta?.text) {
+                  text += data.delta.text;
+                  sendToRenderer('llm:delta', { delta: data.delta.text });
+                }
+              } catch (_) { /* skip malformed JSON */ }
+            }
+          }
+        }
+      } finally {
+        clearTimeout(timeout);
+      }
       if (!text) throw new Error('Anthropic returned an empty response.');
       return text;
     }

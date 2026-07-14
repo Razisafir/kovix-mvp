@@ -668,23 +668,83 @@ async function handleSend() {
   autoResizeInput();
   setBusy(true);
 
-  // Watchdog: if the main process hangs and never responds, un-busy the UI
-  // after 45s AND call cancel-current to reset the main-process busy flag.
-  // Without the cancel-current call, llmBusy stays true and the next
-  // send-message gets rejected with "Another request is still running."
+  // --- Streaming setup ---
+  // Create a placeholder AI bubble that we'll fill as tokens arrive.
+  let streamingBubble = null;
+  let streamingText = '';
+  let firstDeltaReceived = false;
+
+  const unsubscribeDelta = window.kovix.onLLMDelta((payload) => {
+    if (!payload || !payload.delta) return;
+    if (!firstDeltaReceived) {
+      firstDeltaReceived = true;
+      // First token arrived — create the bubble and hide the welcome.
+      hideWelcome();
+      streamingBubble = appendAiMessage('');
+      // Reset the watchdog since tokens are flowing.
+      resetWatchdog();
+    }
+    streamingText += payload.delta;
+    if (streamingBubble) {
+      const bubble = streamingBubble.querySelector('.bubble');
+      if (bubble) bubble.innerHTML = renderMarkdown(streamingText);
+      scrollMessagesToBottom();
+    }
+  });
+
+  // --- Watchdog (smart — resets on each delta) ---
+  // If no token arrives within 60s, OR if tokens stop flowing for 60s,
+  // we cancel and show an error. But as long as tokens are arriving,
+  // the watchdog keeps resetting, so a 2-minute response works fine.
+  let watchdogTimer = null;
   let watchdogFired = false;
-  const watchdog = setTimeout(async () => {
-    watchdogFired = true;
-    // Reset the main-process busy flag so the user can retry immediately.
-    try { await window.kovix.cancelCurrent(); } catch (_) {}
-    setBusy(false);
-    showError('Request timed out after 45s. The provider may be slow or your network may be unstable. You can retry now.');
-  }, 45_000);
+  const WATCHDOG_MS = 60_000;
+
+  function startWatchdog() {
+    if (watchdogTimer) clearTimeout(watchdogTimer);
+    watchdogTimer = setTimeout(async () => {
+      watchdogFired = true;
+      unsubscribeDelta();
+      try { await window.kovix.cancelCurrent(); } catch (_) {}
+      setBusy(false);
+      if (!firstDeltaReceived) {
+        showError('No response received after 60s. The provider may be down or your API key may be invalid. Try the Test Connection button in Settings.');
+      } else {
+        showError('Response stream stalled for 60s. Partial text is shown above.');
+      }
+    }, WATCHDOG_MS);
+  }
+  function resetWatchdog() {
+    if (watchdogTimer && !watchdogFired) {
+      clearTimeout(watchdogTimer);
+      startWatchdog();
+    }
+  }
+  function stopWatchdog() {
+    if (watchdogTimer) { clearTimeout(watchdogTimer); watchdogTimer = null; }
+  }
+  startWatchdog();
 
   try {
     const res = await window.kovix.sendMessage(text);
+    stopWatchdog();
+    unsubscribeDelta();
+
     if (watchdogFired) return; // watchdog already recovered; ignore stale response
-    if (res.assistant) appendAiMessage(res.assistant);
+
+    // If we got deltas, the bubble already exists with the streamed text.
+    // If we DIDN'T get deltas (non-streaming path or empty), create the bubble now.
+    if (!firstDeltaReceived && res.assistant) {
+      appendAiMessage(res.assistant);
+    } else if (firstDeltaReceived && streamingBubble) {
+      // Finalize the streamed bubble with the complete text (in case the
+      // stream missed any trailing content).
+      const bubble = streamingBubble.querySelector('.bubble');
+      if (bubble && res.assistant) {
+        bubble.innerHTML = renderMarkdown(res.assistant);
+      }
+    }
+
     if (res.error) showError(res.error);
     if (res.info)  showInfo(res.info);
     if (res.nextStep) setActiveStep(res.nextStep);
@@ -695,10 +755,12 @@ async function handleSend() {
     // Refresh the history list so the new/updated session shows up.
     refreshHistory();
   } catch (err) {
+    stopWatchdog();
+    unsubscribeDelta();
     if (watchdogFired) return;
     showError(err && err.message ? err.message : String(err));
   } finally {
-    clearTimeout(watchdog);
+    stopWatchdog();
     if (!watchdogFired) setBusy(false);
   }
 }

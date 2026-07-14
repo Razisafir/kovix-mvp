@@ -46,4 +46,15 @@ contextBridge.exposeInMainWorld('kovix', {
     ipcRenderer.on('fs:tree-changed', listener);
     return () => ipcRenderer.removeListener('fs:tree-changed', listener);
   },
+
+  /**
+   * Subscribe to llm:delta events (streamed tokens from the LLM).
+   * @param {(payload:{delta:string}) => void} cb
+   * @returns {() => void} unsubscribe fn
+   */
+  onLLMDelta: (cb) => {
+    const listener = (_evt, payload) => cb(payload);
+    ipcRenderer.on('llm:delta', listener);
+    return () => ipcRenderer.removeListener('llm:delta', listener);
+  },
 });
