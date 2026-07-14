@@ -833,6 +833,7 @@ function bindEvents() {
 
 async function init() {
   bindEvents();
+  initSidebarResizers();
   setActiveStep('idea');
   try {
     const s = await window.kovix.getSettings();
@@ -843,6 +844,62 @@ async function init() {
   } catch (err) {
     showError(err && err.message ? err.message : String(err));
   }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Resizable sidebar sections                                                 */
+/* -------------------------------------------------------------------------- */
+//
+// Each `.sidebar-resizer` sits between two `.sidebar-section` elements.
+// Dragging it adjusts the `flex-basis` of the section ABOVE it (the one
+// that comes first in document order between the two). The section below
+// absorbs the change because it has `flex: 1 1 <n>px`.
+//
+// We track drag state on `document` (mouse move/up) so the cursor can
+// leave the thin handle without stopping the drag.
+
+function initSidebarResizers() {
+  const resizers = $$('.sidebar-resizer');
+  resizers.forEach((resizer) => {
+    resizer.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      resizer.classList.add('dragging');
+      document.body.style.cursor = 'row-resize';
+      document.body.style.userSelect = 'none';
+
+      // The section ABOVE this resizer is the one we'll resize.
+      const section = resizer.previousElementSibling;
+      if (!section || !section.classList.contains('sidebar-section')) {
+        cleanup();
+        return;
+      }
+      const startY = e.clientY;
+      const startHeight = section.getBoundingClientRect().height;
+      const nav = section.closest('.side-nav');
+      const navHeight = nav ? nav.getBoundingClientRect().height : 800;
+
+      function onMouseMove(ev) {
+        const delta = ev.clientY - startY;
+        let nextHeight = startHeight + delta;
+        // Clamp: min 80px, max 70% of nav height (leave room for other sections + footer)
+        const maxH = navHeight * 0.7;
+        nextHeight = Math.max(80, Math.min(maxH, nextHeight));
+        section.style.flex = `0 0 ${nextHeight}px`;
+      }
+      function onMouseUp() {
+        cleanup();
+      }
+      function cleanup() {
+        document.removeEventListener('mousemove', onMouseMove);
+        document.removeEventListener('mouseup', onMouseUp);
+        resizer.classList.remove('dragging');
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      }
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
+    });
+  });
 }
 
 document.addEventListener('DOMContentLoaded', init);

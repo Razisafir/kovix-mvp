@@ -195,8 +195,61 @@ input, select, textarea { font-family: inherit; }
   background: var(--surface-container-low);
   border-right: 1px solid var(--outline-variant);
   display: flex; flex-direction: column;
-  padding: 16px 8px;
-  overflow-y: auto;
+  padding: 16px 8px 0;
+  overflow: hidden;          /* sections scroll internally, not the whole nav */
+}
+
+/* Each sidebar section is a flex child that can be resized via the
+   drag handle below it. The section itself is a column flex container
+   so its title stays fixed and its body (history list / file tree)
+   scrolls. */
+.sidebar-section {
+  display: flex; flex-direction: column;
+  min-height: 80px;
+  overflow: hidden;
+}
+.sidebar-section:first-of-type {
+  /* Workflow section — no extra top padding, it's the first thing */
+  padding-top: 0;
+}
+.sidebar-section[data-section="history"] .history-list,
+.sidebar-section[data-section="workspace"] .file-tree {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Drag handle between sidebar sections */
+.sidebar-resizer {
+  flex: 0 0 6px;
+  height: 6px;
+  margin: 2px 0;
+  cursor: row-resize;
+  background: transparent;
+  border-radius: 3px;
+  position: relative;
+  transition: background var(--t-fast);
+}
+.sidebar-resizer::before {
+  content: '';
+  position: absolute;
+  left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  width: 32px; height: 2px;
+  background: var(--outline-variant);
+  border-radius: 1px;
+  transition: background var(--t-fast);
+}
+.sidebar-resizer:hover {
+  background: var(--surface-container-high);
+}
+.sidebar-resizer:hover::before {
+  background: var(--primary);
+}
+.sidebar-resizer.dragging {
+  background: var(--surface-container-high);
+}
+.sidebar-resizer.dragging::before {
+  background: var(--primary);
 }
 
 .sidebar-section-title {
@@ -672,8 +725,11 @@ input, select, textarea { font-family: inherit; }
   background: var(--surface-container-low);
   border: 1px solid var(--outline-variant);
   border-radius: var(--r-md);
-  overflow: hidden;
+  overflow: auto;
   min-height: 100%;
+  /* Keep the wrap from growing beyond the viewer body */
+  max-width: 100%;
+  max-height: 100%;
 }
 .viewer-line-numbers {
   flex: 0 0 48px;
@@ -683,23 +739,39 @@ input, select, textarea { font-family: inherit; }
   display: flex; flex-direction: column; align-items: center;
   font-family: var(--font-code);
   font-size: 12px;
+  line-height: 20px;
   color: var(--on-surface-variant);
   opacity: 0.5;
   user-select: none;
+  /* Line numbers should not shrink or scroll independently */
+  position: sticky;
+  left: 0;
+  z-index: 1;
 }
-.viewer-line-numbers span { line-height: 22px; }
+.viewer-line-numbers span { line-height: 20px; height: 20px; }
 .viewer-code {
-  flex: 1 1 auto;
+  flex: 1 1 0;
+  /* CRITICAL: min-width:0 lets the flex child shrink below its content's
+     intrinsic width so overflow-x actually works instead of stretching
+     the whole panel (which was causing the 'huge text' bug on minified
+     JSON / long-line files). */
+  min-width: 0;
   padding: 16px;
   font-family: var(--font-code);
-  font-size: 14px;
-  line-height: 22px;
+  font-size: 13px;
+  line-height: 20px;
   overflow-x: auto;
+  overflow-y: hidden;
+  color: var(--on-surface-variant);
 }
 .viewer-code pre {
   margin: 0;
   white-space: pre;
   color: var(--on-surface-variant);
+  tab-size: 2;
+  font-family: var(--font-code);
+  font-size: 13px;
+  line-height: 20px;
 }
 .viewer-binary {
   padding: 40px 20px;
