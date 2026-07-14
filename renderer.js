@@ -253,10 +253,22 @@ function showWelcome() {
 
 function setBusy(busy) {
   state.busy = !!busy;
-  els.sendBtn.disabled = state.busy;
   els.input.disabled = state.busy;
-  els.sendBtn.querySelector('span:first-child').textContent = state.busy ? 'Working...' : 'Send';
   els.fetchModelsBtn.disabled = state.busy;
+  if (state.busy) {
+    // Turn the Send button into a Cancel button
+    els.sendBtn.disabled = false;
+    els.sendBtn.classList.add('canceling');
+    els.sendBtn.querySelector('span:first-child').textContent = 'Cancel';
+    const icon = els.sendBtn.querySelector('.material-symbols-outlined');
+    if (icon) icon.textContent = 'cancel';
+  } else {
+    els.sendBtn.disabled = false;
+    els.sendBtn.classList.remove('canceling');
+    els.sendBtn.querySelector('span:first-child').textContent = 'Send';
+    const icon = els.sendBtn.querySelector('.material-symbols-outlined');
+    if (icon) icon.textContent = 'send';
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -592,6 +604,11 @@ async function handleSaveSettings() {
 /* -------------------------------------------------------------------------- */
 
 async function handleSend() {
+  // If busy, the Send button is now a Cancel button — clicking it cancels.
+  if (state.busy) {
+    return handleCancel();
+  }
+
   clearError();
   clearInfo();
   const text = els.input.value.trim();
@@ -608,13 +625,13 @@ async function handleSend() {
   setBusy(true);
 
   // Watchdog: if the main process hangs and never responds, un-busy the UI
-  // after 90s so the user isn't stuck looking at "Working..." forever.
+  // after 45s so the user isn't stuck looking at "Working..." forever.
   let watchdogFired = false;
   const watchdog = setTimeout(() => {
     watchdogFired = true;
     setBusy(false);
-    showError('Request timed out after 90s. The provider may be down or your API key may be invalid. Try again, or open Settings to reconfigure.');
-  }, 90_000);
+    showError('Request timed out after 45s. Click Cancel or try again. Check Settings → API key.');
+  }, 45_000);
 
   try {
     const res = await window.kovix.sendMessage(text);
@@ -636,6 +653,14 @@ async function handleSend() {
     clearTimeout(watchdog);
     if (!watchdogFired) setBusy(false);
   }
+}
+
+async function handleCancel() {
+  try {
+    await window.kovix.cancelCurrent();
+  } catch (_) { /* ignore */ }
+  setBusy(false);
+  showError('Request cancelled.');
 }
 
 /* -------------------------------------------------------------------------- */

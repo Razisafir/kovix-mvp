@@ -637,6 +637,16 @@ input, select, textarea { font-family: inherit; }
 }
 .send-btn:hover { background: var(--primary); }
 .send-btn:disabled { background: var(--surface-container-high); color: var(--on-surface-variant); cursor: not-allowed; }
+.send-btn.canceling {
+  background: var(--error);
+  border: 1px solid var(--error);
+  animation: pulse-cancel 1.5s ease-in-out infinite;
+}
+.send-btn.canceling:hover { background: #a01515; }
+@keyframes pulse-cancel {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.75; }
+}
 .send-btn .material-symbols-outlined { font-size: 18px; }
 
 .composer-disclaimer {

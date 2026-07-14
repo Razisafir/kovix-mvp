@@ -765,6 +765,10 @@ function deleteSession(id) {
 
 let mainWindow = null;
 
+// Flag to prevent concurrent LLM calls. When true, a new send-message call
+// is rejected immediately so the convo state doesn't get corrupted.
+let llmBusy = false;
+
 function sendToRenderer(channel, payload) {
   try {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -908,15 +912,32 @@ ipcMain.handle('fs:read-file', async (_evt, filePath) => {
  *   }
  */
 ipcMain.handle('send-message', async (_evt, req) => {
+  const logTag = '[send-message]';
   try {
+    console.log(logTag, 'received, step =', convoState.step);
+
     if (!req || typeof req !== 'object' || typeof req.text !== 'string') {
       throw new Error('Invalid send-message payload.');
+    }
+
+    // Prevent concurrent calls — if a previous LLM call is still running,
+    // reject immediately so the UI doesn't get into a weird state.
+    if (llmBusy) {
+      console.log(logTag, 'rejected — another call is in progress');
+      return {
+        ok: false,
+        step: convoState.step,
+        nextStep: convoState.step,
+        assistant: '',
+        error: 'Another request is still running. Please wait or cancel it.',
+      };
     }
 
     const settings = readSettings();
 
     // Guard 1: provider configured?
     if (!settings.provider || !settings.model) {
+      console.log(logTag, 'guard: no provider/model configured');
       return {
         ok: false,
         step: convoState.step,
@@ -929,6 +950,7 @@ ipcMain.handle('send-message', async (_evt, req) => {
     // Guard 2: workspace open?
     const workspace = settings.activeWorkspace || '';
     if (!workspace) {
+      console.log(logTag, 'guard: no workspace');
       return {
         ok: false,
         step: convoState.step,
@@ -938,6 +960,7 @@ ipcMain.handle('send-message', async (_evt, req) => {
       };
     }
     if (!fs.existsSync(workspace) || !fs.statSync(workspace).isDirectory()) {
+      console.log(logTag, 'guard: workspace not found:', workspace);
       return {
         ok: false,
         step: convoState.step,
@@ -966,8 +989,18 @@ ipcMain.handle('send-message', async (_evt, req) => {
 
     convoState.messages.push({ role: 'user', content: userText });
 
-    // Call the LLM.
-    const assistantText = await callLLM(settings, convoState.messages);
+    // Call the LLM — mark busy so concurrent calls are rejected.
+    llmBusy = true;
+    console.log(logTag, 'calling LLM: provider =', settings.provider, 'model =', settings.model, 'msgs =', convoState.messages.length);
+    const callStart = Date.now();
+    let assistantText;
+    try {
+      assistantText = await callLLM(settings, convoState.messages);
+    } finally {
+      llmBusy = false;
+    }
+    console.log(logTag, 'LLM responded in', Date.now() - callStart, 'ms, length =', (assistantText || '').length);
+
     convoState.messages.push({ role: 'assistant', content: assistantText });
 
     const currentStep = convoState.step;
@@ -1099,6 +1132,28 @@ ipcMain.handle('sessions:new', async () => {
     console.error('sessions:new error:', err);
     return { ok: false, error: err.message };
   }
+});
+
+/**
+ * Cancel the current LLM call. We can't truly abort an in-flight HTTP request
+ * from here, but we can:
+ *  1. Reset the busy flag so the next send-message call isn't rejected
+ *  2. Reset the conversation state to drop the in-flight user message
+ *  3. Return immediately so the renderer can un-busy
+ * The stale LLM response (when it eventually arrives) will be ignored because
+ * the renderer already moved on.
+ */
+ipcMain.handle('cancel-current', async () => {
+  console.log('[cancel-current] cancelling, llmBusy =', llmBusy);
+  llmBusy = false;
+  // Drop the last user message if it doesn't have a matching assistant reply
+  // (i.e. the call was still in flight).
+  const msgs = convoState.messages;
+  if (msgs.length > 0 && msgs[msgs.length - 1].role === 'user') {
+    msgs.pop();
+    console.log('[cancel-current] dropped in-flight user message');
+  }
+  return { ok: true };
 });
 
 ipcMain.handle('reset-convo', async () => {
