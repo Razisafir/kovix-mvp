@@ -3,210 +3,239 @@
 <head>
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';" />
-  <title>Kovix MVP</title>
+        content="default-src 'self'; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+  <title>Kovix</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div id="app">
-    <!-- ============================ Header ============================ -->
-    <header class="app-header">
-      <div class="brand">
-        <div class="brand-mark">K</div>
-        <div class="brand-name">Kovix MVP</div>
-        <div id="workspace-pill" class="workspace-pill" title="Active workspace">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
-          </svg>
-          <span id="workspace-name">No folder</span>
-        </div>
-      </div>
-      <div class="header-actions">
-        <button id="reset-btn" class="ghost-btn" title="Reset conversation">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="1 4 1 10 7 10"></polyline>
-            <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
-          </svg>
-          <span>New</span>
-        </button>
-        <button id="settings-btn" class="ghost-btn" title="Open settings">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="3"></circle>
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-          </svg>
-          <span>Settings</span>
-        </button>
-      </div>
-    </header>
-
-    <!-- ============================ Body (3 panes) ============================ -->
-    <div class="app-body">
-      <!-- ============== Left pane (20%): Workflow + File Manager ============== -->
-      <aside class="pane pane-left">
-        <!-- Top half: 5-step workflow -->
-        <section class="pane-section workflow-section">
-          <div class="pane-section-title">Workflow</div>
-          <ol id="step-list" class="step-list">
-            <li class="step-item active" data-step="idea">
-              <span class="step-num">1</span>
-              <span class="step-name">Idea</span>
-            </li>
-            <li class="step-item" data-step="refine">
-              <span class="step-num">2</span>
-              <span class="step-name">Refine</span>
-            </li>
-            <li class="step-item" data-step="spec">
-              <span class="step-num">3</span>
-              <span class="step-name">Spec</span>
-            </li>
-            <li class="step-item" data-step="plan">
-              <span class="step-num">4</span>
-              <span class="step-name">Plan</span>
-            </li>
-            <li class="step-item" data-step="execute">
-              <span class="step-num">5</span>
-              <span class="step-name">Execute</span>
-            </li>
-          </ol>
-          <div class="status-card">
-            <div class="status-row">
-              <span class="status-label">Provider</span>
-              <span id="status-provider" class="status-value">—</span>
-            </div>
-            <div class="status-row">
-              <span class="status-label">Model</span>
-              <span id="status-model" class="status-value">—</span>
-            </div>
-          </div>
-        </section>
-
-        <!-- Bottom half: file manager -->
-        <section class="pane-section files-section">
-          <div class="pane-section-title files-header">
-            <span>Files</span>
-            <button id="open-folder-btn" class="tiny-btn" title="Open folder">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
-              </svg>
-              Open
-            </button>
-          </div>
-          <div id="file-tree" class="file-tree">
-            <div class="file-tree-empty">
-              No folder open.<br />Click <strong>Open</strong> to pick a workspace.
-            </div>
-          </div>
-        </section>
-      </aside>
-
-      <!-- ============== Center pane (40%): Chat console ============== -->
-      <main class="pane pane-center">
-        <div class="pane-header">
-          <span class="pane-header-title">Chat Console</span>
-          <span id="step-pill" class="step-pill">Step 1 · Idea</span>
-        </div>
-
-        <div id="messages" class="messages">
-          <div class="welcome">
-            <div class="welcome-title">Welcome to Kovix MVP</div>
-            <div class="welcome-sub">
-              Open a workspace folder, then type an idea. The 5-step workflow will refine it
-              into a spec, plan the build, then write code into your workspace.
-            </div>
-          </div>
-        </div>
-
-        <div class="composer">
-          <div id="error-banner" class="error-banner hidden"></div>
-          <div id="info-banner" class="info-banner hidden"></div>
-          <div class="composer-row">
-            <textarea id="input" class="input" rows="1"
-                      placeholder="Type your idea and press Send…"></textarea>
-            <button id="send-btn" class="primary-btn">Send</button>
-          </div>
-        </div>
-      </main>
-
-      <!-- ============== Right pane (40%): File viewer ============== -->
-      <section class="pane pane-right">
-        <div class="pane-header">
-          <span id="viewer-title" class="pane-header-title">File Viewer</span>
-          <span id="viewer-meta" class="viewer-meta">No file selected</span>
-        </div>
-        <div id="viewer-body" class="viewer-body">
-          <div class="viewer-empty">
-            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                 stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" class="viewer-empty-icon">
-              <polyline points="16 18 22 12 16 6"></polyline>
-              <polyline points="8 6 2 12 8 18"></polyline>
-            </svg>
-            <div class="viewer-empty-title">No file open</div>
-            <div class="viewer-empty-sub">Select a file from the Files panel to view its contents here.</div>
-          </div>
-        </div>
-      </section>
+  <!-- ============================ TopAppBar (48px) ============================ -->
+  <header class="top-app-bar">
+    <div class="brand">
+      <span class="brand-name">Kovix</span>
     </div>
+    <div class="header-actions">
+      <button id="reset-btn" class="header-icon-btn" title="New project" aria-label="New project">
+        <span class="material-symbols-outlined">add</span>
+      </button>
+      <button id="settings-btn" class="header-icon-btn" title="Settings" aria-label="Settings">
+        <span class="material-symbols-outlined">settings</span>
+      </button>
+      <div class="header-avatar" title="User">
+        <span class="material-symbols-outlined">person</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ============================ Body ============================ -->
+  <div class="app-body">
+    <!-- ============== SideNavBar (240px) ============== -->
+    <nav class="side-nav">
+      <!-- Workflow section -->
+      <div class="sidebar-section-title">
+        <span class="label-sm uppercase">Workflow</span>
+        <span class="label-sm subtle">AI Pipeline</span>
+      </div>
+
+      <button id="new-project-btn" class="new-project-btn">
+        <span class="material-symbols-outlined">add</span>
+        <span>New Project</span>
+      </button>
+
+      <ul id="step-list" class="step-list">
+        <li>
+          <a class="step-item active" data-step="idea" href="#">
+            <span class="material-symbols-outlined" data-icon="lightbulb">lightbulb</span>
+            <span>Idea</span>
+          </a>
+        </li>
+        <li>
+          <a class="step-item" data-step="refine" href="#">
+            <span class="material-symbols-outlined">edit_note</span>
+            <span>Refine</span>
+          </a>
+        </li>
+        <li>
+          <a class="step-item" data-step="spec" href="#">
+            <span class="material-symbols-outlined">description</span>
+            <span>Spec</span>
+          </a>
+        </li>
+        <li>
+          <a class="step-item" data-step="plan" href="#">
+            <span class="material-symbols-outlined">assignment</span>
+            <span>Plan</span>
+          </a>
+        </li>
+        <li>
+          <a class="step-item" data-step="execute" href="#">
+            <span class="material-symbols-outlined">play_arrow</span>
+            <span>Execute</span>
+          </a>
+        </li>
+      </ul>
+
+      <!-- Workspace section -->
+      <div class="sidebar-section-title workspace-title">
+        <span class="label-sm uppercase">Workspace</span>
+        <span id="workspace-pill" class="workspace-pill" title="Active workspace">No folder</span>
+      </div>
+
+      <button id="open-folder-btn" class="open-folder-btn">
+        <span class="material-symbols-outlined">folder_open</span>
+        <span>Open Folder</span>
+      </button>
+
+      <div id="file-tree" class="file-tree">
+        <div class="file-tree-empty">
+          <span class="material-symbols-outlined">folder_off</span>
+          <span>No folder open</span>
+        </div>
+      </div>
+
+      <!-- Status footer -->
+      <div class="sidebar-footer">
+        <div class="status-row">
+          <span class="label-sm subtle">Provider</span>
+          <span id="status-provider" class="label-sm mono">—</span>
+        </div>
+        <div class="status-row">
+          <span class="label-sm subtle">Model</span>
+          <span id="status-model" class="label-sm mono">—</span>
+        </div>
+      </div>
+    </nav>
+
+    <!-- ============== Main / Chat Area (fluid) ============== -->
+    <main class="chat-main">
+      <!-- Chat scroll area -->
+      <div id="messages" class="messages custom-scrollbar">
+        <!-- Welcome / Context Header -->
+        <div id="welcome" class="welcome">
+          <div class="welcome-icon">
+            <span class="material-symbols-outlined">lightbulb</span>
+          </div>
+          <h1 class="welcome-title">Project Ideation</h1>
+          <p class="welcome-sub">Describe your concept, and I'll help structure the initial architecture and requirements.</p>
+        </div>
+      </div>
+
+      <!-- Sticky Input Area -->
+      <div class="composer">
+        <div id="error-banner" class="error-banner hidden"></div>
+        <div id="info-banner" class="info-banner hidden"></div>
+        <div class="composer-input-wrap">
+          <textarea id="input" class="composer-input custom-scrollbar"
+                    placeholder="Type your message..." rows="1"></textarea>
+          <button id="send-btn" class="send-btn">
+            <span>Send</span>
+            <span class="material-symbols-outlined">send</span>
+          </button>
+        </div>
+        <div class="composer-disclaimer">Kovix AI can make mistakes. Consider verifying important information.</div>
+      </div>
+    </main>
+
+    <!-- ============== File Viewer Panel (right, 40%) ============== -->
+    <aside id="file-viewer-panel" class="file-viewer-panel hidden">
+      <div class="file-viewer-header">
+        <div class="file-viewer-title-wrap">
+          <span class="material-symbols-outlined file-viewer-icon">description</span>
+          <span id="viewer-title" class="file-viewer-title">No file</span>
+        </div>
+        <button id="viewer-close-btn" class="header-icon-btn" title="Close viewer" aria-label="Close viewer">
+          <span class="material-symbols-outlined">close</span>
+        </button>
+      </div>
+      <div id="viewer-breadcrumb" class="file-viewer-breadcrumb"></div>
+      <div id="viewer-body" class="file-viewer-body custom-scrollbar">
+        <div class="viewer-empty">
+          <span class="material-symbols-outlined viewer-empty-icon">code</span>
+          <div class="viewer-empty-title">No file open</div>
+          <div class="viewer-empty-sub">Select a file from the workspace to view its contents.</div>
+        </div>
+      </div>
+    </aside>
   </div>
 
   <!-- ============================ Settings Modal ============================ -->
   <div id="settings-modal" class="modal hidden" aria-hidden="true">
     <div class="modal-backdrop" data-close></div>
-    <div class="modal-card" role="dialog" aria-modal="true" aria-label="Settings">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-label="Provider Settings">
+      <!-- Header -->
       <div class="modal-header">
-        <h2>Settings</h2>
-        <button class="icon-btn" data-close aria-label="Close">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="18" y1="6" x2="6" y2="18"></line>
-            <line x1="6" y1="6" x2="18" y2="18"></line>
-          </svg>
+        <h2>Provider Settings</h2>
+        <button class="header-icon-btn" data-close aria-label="Close">
+          <span class="material-symbols-outlined">close</span>
         </button>
       </div>
 
+      <!-- Body -->
       <div class="modal-body">
+        <!-- Provider -->
         <div class="field">
           <label for="provider">Provider</label>
-          <select id="provider">
-            <option value="">— Select a provider —</option>
-            <option value="openai">OpenAI</option>
-            <option value="openrouter">OpenRouter</option>
-            <option value="anthropic">Anthropic</option>
-            <option value="ollama">Ollama</option>
-            <option value="gemini">Gemini</option>
-          </select>
-        </div>
-
-        <div class="field">
-          <label for="api-key">API Key</label>
-          <input id="api-key" type="password" placeholder="sk-…" autocomplete="off" />
-        </div>
-
-        <div class="field">
-          <label for="base-url">Base URL <span class="hint">(optional — defaults applied if blank)</span></label>
-          <input id="base-url" type="text" placeholder="https://api.openai.com/v1" />
-        </div>
-
-        <div class="field row">
-          <div class="grow">
-            <label for="model">Model</label>
-            <select id="model" disabled>
-              <option value="">Click “Fetch Models” first</option>
+          <div class="select-wrap">
+            <select id="provider">
+              <option value="">— Select a provider —</option>
+              <option value="openai">OpenAI</option>
+              <option value="openrouter">OpenRouter</option>
+              <option value="anthropic">Anthropic</option>
+              <option value="ollama">Ollama (Local)</option>
+              <option value="gemini">Gemini</option>
             </select>
+            <span class="material-symbols-outlined select-chevron">expand_more</span>
           </div>
-          <button id="fetch-models-btn" class="secondary-btn" type="button">Fetch Models</button>
+        </div>
+
+        <!-- API Key -->
+        <div class="field">
+          <div class="field-label-row">
+            <label for="api-key">API Key</label>
+          </div>
+          <div class="input-wrap">
+            <span class="material-symbols-outlined input-icon">key</span>
+            <input id="api-key" type="password" placeholder="sk-..." autocomplete="off" />
+          </div>
+        </div>
+
+        <!-- Base URL -->
+        <div class="field">
+          <label for="base-url">Base URL <span class="hint">(optional)</span></label>
+          <div class="input-wrap">
+            <input id="base-url" type="text" placeholder="https://api.openai.com/v1" />
+          </div>
+        </div>
+
+        <hr class="modal-divider" />
+
+        <!-- Model -->
+        <div class="field">
+          <label for="model">Select Model</label>
+          <div class="field-row">
+            <div class="select-wrap grow">
+              <select id="model" disabled>
+                <option value="">Fetch models first...</option>
+              </select>
+              <span class="material-symbols-outlined select-chevron">expand_more</span>
+            </div>
+            <button id="fetch-models-btn" class="secondary-btn" type="button">
+              <span class="material-symbols-outlined">sync</span>
+              <span>Fetch Models</span>
+            </button>
+          </div>
         </div>
 
         <div id="settings-error" class="error-banner hidden"></div>
         <div id="settings-info" class="info-banner hidden"></div>
       </div>
 
+      <!-- Footer -->
       <div class="modal-footer">
         <button class="ghost-btn" data-close>Cancel</button>
-        <button id="save-settings-btn" class="primary-btn">Save</button>
+        <button id="save-settings-btn" class="primary-btn">
+          <span class="material-symbols-outlined">save</span>
+          <span>Save Settings</span>
+        </button>
       </div>
     </div>
   </div>

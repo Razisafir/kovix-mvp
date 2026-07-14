@@ -3,12 +3,13 @@
 /**
  * Kovix MVP — renderer (UI logic)
  *
- * Three-pane layout:
- *   LEFT   — 5-step workflow + File Manager
- *   CENTER — Chat console + composer
- *   RIGHT  — File Viewer
+ * Layout matches stitch_kovix_ai_assistant_ui mockups:
+ *   - 48px header with Kovix brand + settings
+ *   - 240px sidebar with Workflow steps + Workspace file manager
+ *   - Fluid center chat area with sticky composer
+ *   - Right file-viewer panel (40% width) that slides in when a file is opened
  *
- * Talks to the main process exclusively through window.kovix (see preload.js).
+ * Talks to the main process through window.kovix (preload.js).
  */
 
 /* -------------------------------------------------------------------------- */
@@ -23,48 +24,72 @@ const STEP_LABELS = {
   plan: 'Plan',
   execute: 'Execute',
 };
+const STEP_ICONS = {
+  idea: 'lightbulb',
+  refine: 'edit_note',
+  spec: 'description',
+  plan: 'assignment',
+  execute: 'play_arrow',
+};
+const STEP_TITLES = {
+  idea: 'Project Ideation',
+  refine: 'Refining Requirements',
+  spec: 'Specification',
+  plan: 'Milestone Plan',
+  execute: 'Executing',
+};
+const STEP_SUBS = {
+  idea: 'Describe your concept, and I\'ll help structure the initial architecture and requirements.',
+  refine: 'Answer the clarifying questions so we can lock down the spec.',
+  spec: 'Review the formal specification generated from your requirements.',
+  plan: 'Review the milestone plan before execution.',
+  execute: 'The agent is writing code into your workspace.',
+};
 const STEP_PLACEHOLDERS = {
-  idea: 'Describe your idea…',
-  refine: 'Answer the clarifying questions…',
-  spec: 'Approve the spec, or ask for changes (Send to continue)…',
-  plan: 'Approve the plan, or ask for changes (Send to continue)…',
-  execute: 'Send to execute step 1 and write code to your workspace…',
+  idea: 'Describe your idea...',
+  refine: 'Answer the clarifying questions...',
+  spec: 'Approve the spec, or ask for changes...',
+  plan: 'Approve the plan, or ask for changes...',
+  execute: 'Send to execute and write code to your workspace...',
 };
 
 /* -------------------------------------------------------------------------- */
 /* DOM lookups                                                                */
 /* -------------------------------------------------------------------------- */
 
-const $ = (sel) => document.querySelector(sel);
+const $  = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
 const els = {
   // Header
-  settingsBtn:   $('#settings-btn'),
-  resetBtn:      $('#reset-btn'),
-  workspaceName: $('#workspace-name'),
+  settingsBtn: $('#settings-btn'),
+  resetBtn:    $('#reset-btn'),
+  newProjectBtn: $('#new-project-btn'),
+  workspacePill: $('#workspace-pill'),
 
   // Sidebar — workflow
-  stepItems:     $$('.step-item'),
+  stepItems:   $$('.step-item'),
   statusProvider: $('#status-provider'),
   statusModel:    $('#status-model'),
-  stepPill:       $('#step-pill'),
 
   // Sidebar — file manager
   openFolderBtn: $('#open-folder-btn'),
   fileTree:      $('#file-tree'),
 
   // Chat
-  messages:      $('#messages'),
-  input:         $('#input'),
-  sendBtn:       $('#send-btn'),
-  errorBanner:   $('#error-banner'),
-  infoBanner:    $('#info-banner'),
+  messages:     $('#messages'),
+  welcome:      $('#welcome'),
+  input:        $('#input'),
+  sendBtn:      $('#send-btn'),
+  errorBanner:  $('#error-banner'),
+  infoBanner:   $('#info-banner'),
 
   // File viewer
-  viewerTitle:   $('#viewer-title'),
-  viewerMeta:    $('#viewer-meta'),
-  viewerBody:    $('#viewer-body'),
+  viewerPanel:     $('#file-viewer-panel'),
+  viewerTitle:     $('#viewer-title'),
+  viewerBreadcrumb: $('#viewer-breadcrumb'),
+  viewerBody:      $('#viewer-body'),
+  viewerCloseBtn:  $('#viewer-close-btn'),
 
   // Settings modal
   modal:         $('#settings-modal'),
@@ -85,35 +110,49 @@ const els = {
 const state = {
   currentStep: 'idea',
   activeWorkspace: '',
-  selectedFilePath: '',     // absolute path of the file currently shown in the viewer
+  selectedFilePath: '',
   busy: false,
 };
 
 /* -------------------------------------------------------------------------- */
-/* Step indicator                                                             */
+/* Step indicator + welcome header                                            */
 /* -------------------------------------------------------------------------- */
 
 function setActiveStep(step) {
   state.currentStep = step;
   const idx = STEP_ORDER.indexOf(step);
-  els.stepItems.forEach((li) => {
-    const s = li.dataset.step;
+  els.stepItems.forEach((a) => {
+    const s = a.dataset.step;
     const liIdx = STEP_ORDER.indexOf(s);
-    li.classList.toggle('active', s === step);
-    li.classList.toggle('done', liIdx < idx);
+    a.classList.toggle('active', s === step);
+    a.classList.toggle('done', liIdx < idx);
+    // Update icon fill — active icons are filled per the mockup
+    const iconEl = a.querySelector('.material-symbols-outlined');
+    if (iconEl) {
+      if (s === step) iconEl.style.fontVariationSettings = "'FILL' 1";
+      else iconEl.style.fontVariationSettings = '';
+    }
   });
-  els.input.placeholder = STEP_PLACEHOLDERS[step] || 'Type a message…';
-  els.stepPill.textContent = `Step ${idx + 1} · ${STEP_LABELS[step]}`;
+  els.input.placeholder = STEP_PLACEHOLDERS[step] || 'Type your message...';
+  // Update welcome header to reflect current step
+  if (els.welcome) {
+    const titleEl = els.welcome.querySelector('.welcome-title');
+    const subEl = els.welcome.querySelector('.welcome-sub');
+    const iconEl = els.welcome.querySelector('.welcome-icon .material-symbols-outlined');
+    if (titleEl) titleEl.textContent = STEP_TITLES[step] || 'Kovix';
+    if (subEl) subEl.textContent = STEP_SUBS[step] || '';
+    if (iconEl) iconEl.textContent = STEP_ICONS[step] || 'lightbulb';
+  }
 }
 
 /* -------------------------------------------------------------------------- */
 /* Banners                                                                    */
 /* -------------------------------------------------------------------------- */
 
-function showError(msg)    { banner(els.errorBanner, msg); }
-function clearError()      { els.errorBanner.classList.add('hidden'); }
-function showInfo(msg)     { banner(els.infoBanner, msg); }
-function clearInfo()       { els.infoBanner.classList.add('hidden'); }
+function showError(msg) { banner(els.errorBanner, msg); }
+function clearError()   { els.errorBanner.classList.add('hidden'); }
+function showInfo(msg)  { banner(els.infoBanner, msg); }
+function clearInfo()    { els.infoBanner.classList.add('hidden'); }
 function showSettingsError(msg) { banner(els.settingsError, msg); }
 function showSettingsInfo(msg)  { banner(els.settingsInfo, msg); }
 
@@ -136,23 +175,10 @@ function escapeHtml(s) {
     .replace(/'/g, '&#39;');
 }
 
-/**
- * Tiny, safe markdown renderer for AI bubbles:
- *   fenced ```lang\ncode``` -> <pre><code>
- *   inline `code`            -> <code>
- *   **bold**                 -> <strong>
- *   ## / ### headings
- *   - bullet lists, 1. numbered lists
- *   blank-line separated paragraphs
- *
- * Everything is escaped first; transformations operate on the escaped string,
- * so no raw HTML from the LLM ever reaches the DOM.
- */
 function renderMarkdown(md) {
   const escaped = escapeHtml(md || '');
   const parts = escaped.split(/(```[\s\S]*?```)/g);
   const out = [];
-
   for (const part of parts) {
     if (/^```/.test(part)) {
       const body = part.replace(/^```[a-zA-Z0-9+-]*\n?/, '').replace(/```$/, '');
@@ -162,7 +188,7 @@ function renderMarkdown(md) {
       block = block.replace(/`([^`]+)`/g, '<code>$1</code>');
       block = block.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
       block = block.replace(/^###\s+(.*)$/gm, '<h3>$1</h3>');
-      block = block.replace(/^##\s+(.*)$/gm, '<h2>$1</h2>');
+      block = block.replace(/^##\s+(.*)$/gm, '<h3>$1</h3>');
       block = block.replace(/(?:^|\n)((?:- .*(?:\n|$))+)/g, (m, group) => {
         const items = group.trim().split(/\n/).map((l) => l.replace(/^- /, '').trim());
         return '\n<ul>' + items.map((i) => `<li>${i}</li>`).join('') + '</ul>';
@@ -188,6 +214,7 @@ function appendUserMessage(text) {
   row.className = 'msg user';
   row.innerHTML = `<div class="bubble">${escapeHtml(text)}</div>`;
   els.messages.appendChild(row);
+  hideWelcome();
   scrollMessagesToBottom();
 }
 
@@ -199,6 +226,7 @@ function appendAiMessage(text) {
   bubble.innerHTML = renderMarkdown(text);
   row.appendChild(bubble);
   els.messages.appendChild(row);
+  hideWelcome();
   scrollMessagesToBottom();
   return row;
 }
@@ -207,22 +235,26 @@ function scrollMessagesToBottom() {
   els.messages.scrollTop = els.messages.scrollHeight;
 }
 
-function removeWelcomeIfPresent() {
-  const w = els.messages.querySelector('.welcome');
-  if (w) w.remove();
+function hideWelcome() {
+  if (els.welcome && !els.welcome.classList.contains('hidden')) {
+    els.welcome.classList.add('hidden');
+  }
+}
+
+function showWelcome() {
+  if (els.welcome) els.welcome.classList.remove('hidden');
 }
 
 function setBusy(busy) {
   state.busy = !!busy;
   els.sendBtn.disabled = state.busy;
   els.input.disabled = state.busy;
-  els.sendBtn.textContent = state.busy ? 'Working…' : 'Send';
+  els.sendBtn.querySelector('span:first-child').textContent = state.busy ? 'Working...' : 'Send';
   els.fetchModelsBtn.disabled = state.busy;
-  els.fetchModelsBtn.textContent = state.busy ? 'Fetching…' : 'Fetch Models';
 }
 
 /* -------------------------------------------------------------------------- */
-/* Status card                                                                */
+/* Status card + workspace pill                                               */
 /* -------------------------------------------------------------------------- */
 
 function updateStatusCard(settings) {
@@ -233,13 +265,12 @@ function updateStatusCard(settings) {
 function updateWorkspacePill(path) {
   state.activeWorkspace = path || '';
   if (!path) {
-    els.workspaceName.textContent = 'No folder';
-    els.workspaceName.title = 'No workspace folder open';
+    els.workspacePill.textContent = 'No folder';
+    els.workspacePill.title = 'No workspace folder open';
   } else {
-    // Show basename for the pill, full path in the tooltip.
     const name = path.split(/[\\/]/).filter(Boolean).pop() || path;
-    els.workspaceName.textContent = name;
-    els.workspaceName.title = path;
+    els.workspacePill.textContent = name;
+    els.workspacePill.title = path;
   }
 }
 
@@ -247,42 +278,30 @@ function updateWorkspacePill(path) {
 /* File tree                                                                  */
 /* -------------------------------------------------------------------------- */
 
-function fileIcon(name, isDir) {
-  if (isDir) {
-    return `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-              stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
-            </svg>`;
-  }
+function fileIconName(name, isDir) {
+  if (isDir) return 'folder';
   const ext = (name.split('.').pop() || '').toLowerCase();
-  // Color-code by file type
-  let color = 'currentColor';
-  if (['html', 'htm'].includes(ext)) color = '#e06c2a';
-  else if (['js', 'mjs', 'cjs', 'jsx'].includes(ext)) color = '#d4b106';
-  else if (['ts', 'tsx'].includes(ext)) color = '#2b6cb0';
-  else if (['css', 'scss', 'sass'].includes(ext)) color = '#39a0d6';
-  else if (['json'].includes(ext)) color = '#7c7a72';
-  else if (['md', 'markdown'].includes(ext)) color = '#5b8def';
-  else if (['py'].includes(ext)) color = '#3776ab';
-  else if (['txt'].includes(ext)) color = '#7c7a72';
-  return `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="${color}"
-            stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-            <polyline points="14 2 14 8 20 8"></polyline>
-          </svg>`;
+  if (['html', 'htm'].includes(ext)) return 'html';
+  if (['js', 'mjs', 'cjs', 'jsx'].includes(ext)) return 'javascript';
+  if (['ts', 'tsx'].includes(ext)) return 'javascript'; // no TS icon in material symbols; reuse
+  if (['css', 'scss', 'sass'].includes(ext)) return 'css';
+  if (['json'].includes(ext)) return 'json';
+  if (['md', 'markdown'].includes(ext)) return 'description';
+  if (['py'].includes(ext)) return 'code';
+  if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'].includes(ext)) return 'image';
+  return 'description';
 }
 
 function renderTree(node, depth = 0) {
-  // node = { name, path, type, children?, error? }
   const wrap = document.createDocumentFragment();
-
   const row = document.createElement('div');
   row.className = 'tree-node';
   row.dataset.path = node.path;
   row.dataset.type = node.type;
   row.dataset.name = node.name;
+  const iconName = fileIconName(node.name, node.type === 'dir');
   row.innerHTML =
-    `<span class="tree-icon">${fileIcon(node.name, node.type === 'dir')}</span>` +
+    `<span class="material-symbols-outlined">${escapeHtml(iconName)}</span>` +
     `<span class="tree-name">${escapeHtml(node.name)}</span>`;
   wrap.appendChild(row);
 
@@ -297,22 +316,18 @@ function renderTree(node, depth = 0) {
     if (node.error) {
       const err = document.createElement('div');
       err.className = 'tree-node';
-      err.style.color = 'var(--danger)';
+      err.style.color = 'var(--error)';
       err.textContent = `⚠ ${node.error}`;
       children.appendChild(err);
     }
-    // Top-level node (the workspace root) is always expanded.
-    // Deeper directories start collapsed if empty, expanded if they have children.
-    if (depth === 0) {
-      children.classList.remove('hidden');
-    } else if (node.children && node.children.length === 0) {
-      children.classList.add('hidden');
+    if (depth > 0 && node.children && node.children.length === 0) {
+      children.classList.add('collapsed');
     }
     wrap.appendChild(children);
 
     row.addEventListener('click', (e) => {
       e.stopPropagation();
-      children.classList.toggle('hidden');
+      children.classList.toggle('collapsed');
     });
   } else {
     row.addEventListener('click', (e) => {
@@ -320,104 +335,107 @@ function renderTree(node, depth = 0) {
       selectFile(node.path, row);
     });
   }
-
   return wrap;
 }
 
 async function refreshFileTree(trySelectPath) {
-  // Clear current tree
   els.fileTree.innerHTML = '';
-
   if (!state.activeWorkspace) {
     els.fileTree.innerHTML =
-      '<div class="file-tree-empty">No folder open.<br />Click <strong>Open</strong> to pick a workspace.</div>';
+      '<div class="file-tree-empty"><span class="material-symbols-outlined">folder_off</span><span>No folder open</span></div>';
     return;
   }
-
   let res;
-  try {
-    res = await window.kovix.getTree();
-  } catch (err) {
-    els.fileTree.innerHTML =
-      `<div class="file-tree-empty">Error: ${escapeHtml(err.message || String(err))}</div>`;
+  try { res = await window.kovix.getTree(); }
+  catch (err) {
+    els.fileTree.innerHTML = `<div class="file-tree-empty"><span class="material-symbols-outlined">error</span><span>${escapeHtml(err.message || String(err))}</span></div>`;
     return;
   }
-
   if (!res.ok) {
-    els.fileTree.innerHTML =
-      `<div class="file-tree-empty">Error: ${escapeHtml(res.error || 'unknown')}</div>`;
+    els.fileTree.innerHTML = `<div class="file-tree-empty"><span class="material-symbols-outlined">error</span><span>${escapeHtml(res.error || 'unknown')}</span></div>`;
     return;
   }
-
   if (!res.tree || !Array.isArray(res.tree.children)) {
-    els.fileTree.innerHTML =
-      '<div class="file-tree-empty">Empty workspace.</div>';
+    els.fileTree.innerHTML = '<div class="file-tree-empty"><span class="material-symbols-outlined">folder_off</span><span>Empty workspace</span></div>';
     return;
   }
-
-  // Render the root's children (skip rendering the root row itself for cleanliness)
   for (const child of res.tree.children) {
     els.fileTree.appendChild(renderTree(child, 0));
   }
-
-  // If a file was just written, try to auto-select & open it.
   if (trySelectPath) {
-    const row = els.fileTree.querySelector(`.tree-node[data-path="${cssEscape(trySelectPath)}"]`);
+    const safe = String(trySelectPath).replace(/["\\]/g, '\\$&');
+    const row = els.fileTree.querySelector(`.tree-node[data-path="${safe}"]`);
     if (row && row.dataset.type === 'file') {
       selectFile(row.dataset.path, row);
     }
   }
 }
 
-/**
- * Minimal CSS attribute-value escape (for querySelector on data-path).
- * Paths may contain characters that need backslash-escaping inside [attr="…"].
- */
-function cssEscape(str) {
-  return String(str).replace(/["\\]/g, '\\$&');
-}
-
 async function selectFile(filePath, rowEl) {
-  // Mark selected in the tree
   $$('.tree-node.selected').forEach((n) => n.classList.remove('selected'));
   if (rowEl) rowEl.classList.add('selected');
 
   state.selectedFilePath = filePath;
   const name = filePath.split(/[\\/]/).filter(Boolean).pop() || filePath;
   els.viewerTitle.textContent = name;
-  els.viewerMeta.textContent = 'Loading…';
-  els.viewerBody.innerHTML = '<div class="viewer-binary">Loading…</div>';
+
+  // Build breadcrumb from workspace-relative path
+  const ws = state.activeWorkspace;
+  let relPath = filePath;
+  if (ws && filePath.startsWith(ws)) {
+    relPath = filePath.slice(ws.length).replace(/^[\\/]+/, '');
+  }
+  const crumbs = relPath.split(/[\\/]/).filter(Boolean);
+  els.viewerBreadcrumb.innerHTML = '';
+  crumbs.forEach((c, i) => {
+    const span = document.createElement('span');
+    span.textContent = c;
+    if (i === crumbs.length - 1) span.classList.add('crumb-current');
+    els.viewerBreadcrumb.appendChild(span);
+    if (i < crumbs.length - 1) {
+      const chev = document.createElement('span');
+      chev.className = 'material-symbols-outlined';
+      chev.textContent = 'chevron_right';
+      els.viewerBreadcrumb.appendChild(chev);
+    }
+  });
+
+  els.viewerBody.innerHTML = '<div class="viewer-binary">Loading...</div>';
 
   let res;
-  try {
-    res = await window.kovix.readFile(filePath);
-  } catch (err) {
-    els.viewerMeta.textContent = 'Error';
-    els.viewerBody.innerHTML =
-      `<div class="viewer-binary">Error: ${escapeHtml(err.message || String(err))}</div>`;
+  try { res = await window.kovix.readFile(filePath); }
+  catch (err) {
+    els.viewerBody.innerHTML = `<div class="viewer-binary">Error: ${escapeHtml(err.message || String(err))}</div>`;
+    openViewerPanel();
     return;
   }
-
   if (!res.ok) {
-    els.viewerMeta.textContent = 'Error';
-    els.viewerBody.innerHTML =
-      `<div class="viewer-binary">Error: ${escapeHtml(res.error || 'unknown')}</div>`;
+    els.viewerBody.innerHTML = `<div class="viewer-binary">Error: ${escapeHtml(res.error || 'unknown')}</div>`;
+    openViewerPanel();
     return;
   }
 
-  const sizeStr = formatBytes(res.size || 0);
   if (res.binary) {
-    els.viewerMeta.textContent = `${res.name} · ${sizeStr} · binary`;
-    els.viewerBody.innerHTML =
-      `<div class="viewer-binary">${escapeHtml(res.content)}</div>`;
+    els.viewerBody.innerHTML = `<div class="viewer-binary">${escapeHtml(res.content)}</div>`;
   } else {
-    els.viewerMeta.textContent = `${res.name} · ${sizeStr}`;
-    const pre = document.createElement('pre');
-    pre.className = 'viewer-pre';
-    pre.textContent = res.content; // textContent = safe, no HTML injection
-    els.viewerBody.innerHTML = '';
-    els.viewerBody.appendChild(pre);
+    const lines = res.content.split('\n');
+    const lineNums = lines.map((_, i) => `<span>${i + 1}</span>`).join('');
+    els.viewerBody.innerHTML =
+      `<div class="viewer-code-wrap">` +
+        `<div class="viewer-line-numbers">${lineNums}</div>` +
+        `<div class="viewer-code"><pre>${escapeHtml(res.content)}</pre></div>` +
+      `</div>`;
   }
+  openViewerPanel();
+}
+
+function openViewerPanel() {
+  els.viewerPanel.classList.remove('hidden');
+}
+function closeViewerPanel() {
+  els.viewerPanel.classList.add('hidden');
+  $$('.tree-node.selected').forEach((n) => n.classList.remove('selected'));
+  state.selectedFilePath = '';
 }
 
 function formatBytes(n) {
@@ -434,7 +452,7 @@ async function handleOpenFolder() {
   try {
     const res = await window.kovix.openFolder();
     if (!res.ok) {
-      if (res.canceled) return; // silent on cancel
+      if (res.canceled) return;
       showError(res.error || 'Failed to open folder');
       return;
     }
@@ -462,9 +480,11 @@ function openSettings() {
       els.modelSel.innerHTML = `<option value="${escapeHtml(s.model)}">${escapeHtml(s.model)}</option>`;
       els.modelSel.value = s.model;
       els.modelSel.disabled = false;
+      els.modelSel.parentElement.classList.remove('disabled');
     } else {
-      els.modelSel.innerHTML = '<option value="">Click “Fetch Models” first</option>';
+      els.modelSel.innerHTML = '<option value="">Fetch models first...</option>';
       els.modelSel.disabled = true;
+      els.modelSel.parentElement.classList.add('disabled');
     }
   }).catch((err) => showSettingsError(err.message));
 }
@@ -480,35 +500,33 @@ async function handleFetchModels() {
   const provider = els.providerSel.value;
   const apiKey = els.apiKeyInput.value.trim();
   const baseUrl = els.baseUrlInput.value.trim();
-
   if (!provider) {
     showSettingsError('Please select a provider first.');
     return;
   }
-
   els.fetchModelsBtn.disabled = true;
-  els.fetchModelsBtn.textContent = 'Fetching…';
-
   try {
     const models = await window.kovix.fetchModels({ provider, apiKey, baseUrl });
     if (!Array.isArray(models) || models.length === 0) {
       showSettingsError('Provider returned no models.');
       els.modelSel.innerHTML = '<option value="">No models available</option>';
       els.modelSel.disabled = true;
+      els.modelSel.parentElement.classList.add('disabled');
       return;
     }
     els.modelSel.innerHTML = models
       .map((m) => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`)
       .join('');
     els.modelSel.disabled = false;
+    els.modelSel.parentElement.classList.remove('disabled');
     showSettingsInfo(`Loaded ${models.length} models.`);
   } catch (err) {
     showSettingsError(err && err.message ? err.message : String(err));
-    els.modelSel.innerHTML = '<option value="">Click “Fetch Models” first</option>';
+    els.modelSel.innerHTML = '<option value="">Fetch models first...</option>';
     els.modelSel.disabled = true;
+    els.modelSel.parentElement.classList.add('disabled');
   } finally {
     els.fetchModelsBtn.disabled = false;
-    els.fetchModelsBtn.textContent = 'Fetch Models';
   }
 }
 
@@ -520,16 +538,10 @@ async function handleSaveSettings() {
     apiKey:   els.apiKeyInput.value.trim(),
     baseUrl:  els.baseUrlInput.value.trim(),
     model:    els.modelSel.value,
-    activeWorkspace: state.activeWorkspace, // preserve existing workspace
+    activeWorkspace: state.activeWorkspace,
   };
-  if (!next.provider) {
-    showSettingsError('Please select a provider.');
-    return;
-  }
-  if (!next.model) {
-    showSettingsError('Please fetch and select a model.');
-    return;
-  }
+  if (!next.provider) { showSettingsError('Please select a provider.'); return; }
+  if (!next.model)    { showSettingsError('Please fetch and select a model.'); return; }
   try {
     const saved = await window.kovix.saveSettings(next);
     updateStatusCard(saved);
@@ -550,13 +562,11 @@ async function handleSend() {
   const text = els.input.value.trim();
   if (!text) return;
 
-  // Workspace guard (defensive — backend also checks).
   if (!state.activeWorkspace) {
     showError('Please open a folder in the File Manager before starting.');
     return;
   }
 
-  removeWelcomeIfPresent();
   appendUserMessage(text);
   els.input.value = '';
   autoResizeInput();
@@ -564,24 +574,10 @@ async function handleSend() {
 
   try {
     const res = await window.kovix.sendMessage(text);
-
-    if (res.assistant) {
-      appendAiMessage(res.assistant);
-    }
-
-    if (res.error) {
-      showError(res.error);
-    }
-
-    if (res.info) {
-      showInfo(res.info);
-    }
-
-    if (res.nextStep) {
-      setActiveStep(res.nextStep);
-    }
-
-    // If the agent wrote a file, refresh the tree and auto-open it in the viewer.
+    if (res.assistant) appendAiMessage(res.assistant);
+    if (res.error) showError(res.error);
+    if (res.info)  showInfo(res.info);
+    if (res.nextStep) setActiveStep(res.nextStep);
     if (res.wroteFile && res.writtenPath) {
       await refreshFileTree(res.writtenPath);
     }
@@ -600,15 +596,16 @@ async function handleReset() {
   try {
     await window.kovix.resetConvo();
     els.messages.innerHTML = '';
-    const w = document.createElement('div');
-    w.className = 'welcome';
-    w.innerHTML = `
-      <div class="welcome-title">Welcome to Kovix MVP</div>
-      <div class="welcome-sub">
-        Open a workspace folder, then type an idea. The 5-step workflow will refine it
-        into a spec, plan the build, then write code into your workspace.
-      </div>`;
-    els.messages.appendChild(w);
+    // Rebuild the welcome node since we cleared it
+    const welcome = document.createElement('div');
+    welcome.id = 'welcome';
+    welcome.className = 'welcome';
+    welcome.innerHTML =
+      '<div class="welcome-icon"><span class="material-symbols-outlined">lightbulb</span></div>' +
+      '<h1 class="welcome-title">Project Ideation</h1>' +
+      '<p class="welcome-sub">Describe your concept, and I\'ll help structure the initial architecture and requirements.</p>';
+    els.messages.appendChild(welcome);
+    els.welcome = welcome;
     setActiveStep('idea');
     clearError();
     clearInfo();
@@ -624,7 +621,7 @@ async function handleReset() {
 function autoResizeInput() {
   const ta = els.input;
   ta.style.height = 'auto';
-  ta.style.height = Math.min(ta.scrollHeight, 160) + 'px';
+  ta.style.height = Math.min(ta.scrollHeight, 150) + 'px';
 }
 
 /* -------------------------------------------------------------------------- */
@@ -642,8 +639,9 @@ function bindEvents() {
     }
   });
 
-  // Reset
+  // Reset / new project
   els.resetBtn.addEventListener('click', handleReset);
+  if (els.newProjectBtn) els.newProjectBtn.addEventListener('click', handleReset);
 
   // Settings modal
   els.settingsBtn.addEventListener('click', openSettings);
@@ -651,19 +649,18 @@ function bindEvents() {
     el.addEventListener('click', closeSettings)
   );
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !els.modal.classList.contains('hidden')) {
-      closeSettings();
+    if (e.key === 'Escape') {
+      if (!els.modal.classList.contains('hidden')) closeSettings();
     }
   });
-
-  // Settings actions
   els.fetchModelsBtn.addEventListener('click', handleFetchModels);
   els.saveSettingsBtn.addEventListener('click', handleSaveSettings);
 
   // Provider change → reset model dropdown + update baseUrl placeholder
   els.providerSel.addEventListener('change', () => {
-    els.modelSel.innerHTML = '<option value="">Click “Fetch Models” first</option>';
+    els.modelSel.innerHTML = '<option value="">Fetch models first...</option>';
     els.modelSel.disabled = true;
+    els.modelSel.parentElement.classList.add('disabled');
     showSettingsError('');
     showSettingsInfo('');
     const hints = {
@@ -678,29 +675,22 @@ function bindEvents() {
 
   // File manager
   els.openFolderBtn.addEventListener('click', handleOpenFolder);
+  els.viewerCloseBtn.addEventListener('click', closeViewerPanel);
 
-  // Listen for tree-changed events from main (e.g. after Execute writes a file).
-  // The Execute path itself also calls refreshFileTree() with the specific file,
-  // but this keeps the tree in sync if the workspace changes from elsewhere.
+  // Listen for tree-changed events
   window.kovix.onTreeChanged((_payload) => {
-    refreshFileTree().catch((err) => {
-      console.error('tree refresh failed:', err);
-    });
+    refreshFileTree().catch((err) => console.error('tree refresh failed:', err));
   });
 }
 
 async function init() {
   bindEvents();
   setActiveStep('idea');
-
   try {
     const s = await window.kovix.getSettings();
     updateStatusCard(s);
     updateWorkspacePill(s.activeWorkspace || '');
-    // If a workspace is already persisted, render its tree on boot.
-    if (s.activeWorkspace) {
-      await refreshFileTree();
-    }
+    if (s.activeWorkspace) await refreshFileTree();
   } catch (err) {
     showError(err && err.message ? err.message : String(err));
   }
