@@ -384,6 +384,13 @@ input, select, textarea { font-family: inherit; }
   transition: background var(--t-fast);
   white-space: nowrap;
   overflow: hidden;
+  position: relative;
+  /* CRITICAL: min-width:0 lets the row shrink to fit its container so the
+     .tree-name child can ellipsis long filenames instead of pushing the
+     row wider than the sidebar (which was causing the 'huge text' bug
+     where filenames like bluesum_hostinger...json broke the layout). */
+  min-width: 0;
+  width: 100%;
 }
 .tree-node:hover { background: var(--surface-container); }
 .tree-node.selected {
@@ -393,6 +400,10 @@ input, select, textarea { font-family: inherit; }
 }
 .tree-node .material-symbols-outlined { font-size: 18px; color: inherit; opacity: 0.85; flex: 0 0 18px; }
 .tree-node .tree-name {
+  /* flex:1 + min-width:0 = the magic combo that lets a flex child
+     ellipsis its text instead of growing to fit the full string. */
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -883,9 +894,6 @@ input, select, textarea { font-family: inherit; }
 
 /* ============================================================= File tree expansion === */
 
-.tree-node {
-  position: relative;
-}
 .tree-node.is-dir .tree-name { font-weight: 500; }
 .tree-node .tree-chevron {
   flex: 0 0 16px;
