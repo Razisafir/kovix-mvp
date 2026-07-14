@@ -607,8 +607,18 @@ async function handleSend() {
   autoResizeInput();
   setBusy(true);
 
+  // Watchdog: if the main process hangs and never responds, un-busy the UI
+  // after 90s so the user isn't stuck looking at "Working..." forever.
+  let watchdogFired = false;
+  const watchdog = setTimeout(() => {
+    watchdogFired = true;
+    setBusy(false);
+    showError('Request timed out after 90s. The provider may be down or your API key may be invalid. Try again, or open Settings to reconfigure.');
+  }, 90_000);
+
   try {
     const res = await window.kovix.sendMessage(text);
+    if (watchdogFired) return; // watchdog already recovered; ignore stale response
     if (res.assistant) appendAiMessage(res.assistant);
     if (res.error) showError(res.error);
     if (res.info)  showInfo(res.info);
@@ -620,9 +630,11 @@ async function handleSend() {
     // Refresh the history list so the new/updated session shows up.
     refreshHistory();
   } catch (err) {
+    if (watchdogFired) return;
     showError(err && err.message ? err.message : String(err));
   } finally {
-    setBusy(false);
+    clearTimeout(watchdog);
+    if (!watchdogFired) setBusy(false);
   }
 }
 

@@ -236,6 +236,21 @@ async function safeReadText(res) {
   }
 }
 
+/**
+ * Wrap a promise with a hard timeout. Resolves to {ok, value} or {ok:false, error}.
+ * Used to put a ceiling on LLM calls so a hung request can't freeze the UI forever.
+ */
+function withTimeout(promise, ms, label) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      resolve({ ok: false, error: `${label || 'Request'} timed out after ${Math.round(ms / 1000)}s.` });
+    }, ms);
+    promise
+      .then((value) => { clearTimeout(timer); resolve({ ok: true, value }); })
+      .catch((err)  => { clearTimeout(timer); resolve({ ok: false, error: err && err.message ? err.message : String(err) }); });
+  });
+}
+
 /* -------------------------------------------------------------------------- */
 /* Dynamic LLM caller                                                         */
 /* -------------------------------------------------------------------------- */
@@ -267,19 +282,34 @@ async function callLLM(settings, messages) {
       const client = new OpenAI({
         apiKey: apiKey || 'ollama',
         baseURL: baseUrl || DEFAULT_BASE_URLS[provider],
+        // CRITICAL: the openai SDK defaults to maxRetries:2 with exponential
+        // backoff, which can hang for minutes on 429/5xx and freeze the UI.
+        // We set maxRetries:1 so one transient retry is allowed, then we fail
+        // fast and surface the error to the user.
+        maxRetries: 1,
+        // Hard timeout on the underlying HTTP request. The SDK's own timeout
+        // only covers the initial connection; this covers the full request.
+        timeout: 60_000,
         defaultHeaders: provider === 'openrouter' ? {
           'HTTP-Referer': 'https://github.com/Razisafir/kovix-mvp',
           'X-Title': 'Kovix MVP',
         } : undefined,
       });
-      const completion = await client.chat.completions.create({
-        model,
-        messages,
-        temperature: 0.7,
-      });
-      const text = completion?.choices?.[0]?.message?.content;
-      if (!text) throw new Error('LLM returned an empty response.');
-      return text;
+      // AbortController as a belt-and-suspenders hard cap.
+      const ac = new AbortController();
+      const timeout = setTimeout(() => ac.abort(), 70_000);
+      try {
+        const completion = await client.chat.completions.create({
+          model,
+          messages,
+          temperature: 0.7,
+        }, { signal: ac.signal });
+        const text = completion?.choices?.[0]?.message?.content;
+        if (!text) throw new Error('LLM returned an empty response.');
+        return text;
+      } finally {
+        clearTimeout(timeout);
+      }
     }
 
     case 'anthropic': {
@@ -296,20 +326,34 @@ async function callLLM(settings, messages) {
         messages: userTurns,
       };
       if (sysMsg) body.system = sysMsg.content;
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify(body),
-      });
+      const ac = new AbortController();
+      const timeout = setTimeout(() => ac.abort(), 70_000);
+      let res;
+      try {
+        res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify(body),
+          signal: ac.signal,
+        });
+      } catch (err) {
+        clearTimeout(timeout);
+        if (err && err.name === 'AbortError') {
+          throw new Error('Anthropic request timed out after 70s.');
+        }
+        throw err;
+      }
       if (!res.ok) {
+        clearTimeout(timeout);
         const errText = await safeReadText(res);
         throw new Error(`Anthropic /v1/messages returned ${res.status}: ${errText}`);
       }
       const data = await res.json();
+      clearTimeout(timeout);
       const text = Array.isArray(data?.content)
         ? data.content.map((c) => c?.text || '').join('')
         : '';
@@ -334,16 +378,30 @@ async function callLLM(settings, messages) {
       if (sysMsg) {
         body.systemInstruction = { parts: [{ text: sysMsg.content }] };
       }
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body),
-      });
+      const ac = new AbortController();
+      const timeout = setTimeout(() => ac.abort(), 70_000);
+      let res;
+      try {
+        res = await fetch(url, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: ac.signal,
+        });
+      } catch (err) {
+        clearTimeout(timeout);
+        if (err && err.name === 'AbortError') {
+          throw new Error('Gemini request timed out after 70s.');
+        }
+        throw err;
+      }
       if (!res.ok) {
+        clearTimeout(timeout);
         const errText = await safeReadText(res);
         throw new Error(`Gemini generateContent returned ${res.status}: ${errText}`);
       }
       const data = await res.json();
+      clearTimeout(timeout);
       const text = Array.isArray(data?.candidates?.[0]?.content?.parts)
         ? data.candidates[0].content.parts.map((p) => p?.text || '').join('')
         : '';
