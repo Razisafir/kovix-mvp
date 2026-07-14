@@ -6,11 +6,15 @@
  * Responsibilities:
  *  - Create the BrowserWindow and load index.html
  *  - Persist user settings (provider / apiKey / baseUrl / model) to settings.json
+ *  - Manage an "active workspace" directory (persisted across sessions in settings)
  *  - Fetch available models from any of the 5 supported providers
  *  - Orchestrate the 5-step state machine (Idea -> Refine -> Spec -> Plan -> Execute)
  *  - Call the configured LLM dynamically (openai SDK for OpenAI/OpenRouter/Ollama,
  *    native fetch for Anthropic/Gemini)
- *  - Parse the final code block out of the LLM response and write it to output.txt
+ *  - Parse the final code block out of the LLM response and write it to a file
+ *    INSIDE the active workspace (default: index.html, fallback: output.txt)
+ *  - Serve the file tree and file contents to the renderer
+ *  - Notify the renderer when the file tree changes (so the FM auto-refreshes)
  *
  * Every IPC handler and every LLM call is wrapped in try/catch so the renderer
  * always receives a structured error string instead of crashing the app.
@@ -19,6 +23,7 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const fsp = require('fs').promises;
 
 // openai SDK is used for OpenAI, OpenRouter, and Ollama (all expose an OpenAI-compatible /v1/chat/completions endpoint).
 const OpenAI = require('openai').default || require('openai');
@@ -29,13 +34,13 @@ const OpenAI = require('openai').default || require('openai');
 
 const APP_ROOT = __dirname;
 const SETTINGS_PATH = path.join(APP_ROOT, 'settings.json');
-const OUTPUT_PATH = path.join(APP_ROOT, 'output.txt');
 
 const DEFAULT_SETTINGS = {
   provider: '',
   apiKey: '',
   baseUrl: '',
   model: '',
+  activeWorkspace: '',
 };
 
 const DEFAULT_BASE_URLS = {
@@ -72,6 +77,11 @@ const STEP_LABELS = {
   execute: 'Execute',
 };
 
+// Directories to hide from the file tree.
+const IGNORED_DIRS = new Set(['node_modules', '.git', '.svn', '.hg', 'dist', 'build', '.cache']);
+// Max file size we will read into the viewer (8 MB) to avoid OOM on big binaries.
+const MAX_READ_BYTES = 8 * 1024 * 1024;
+
 /* -------------------------------------------------------------------------- */
 /* Settings persistence                                                       */
 /* -------------------------------------------------------------------------- */
@@ -99,6 +109,20 @@ function writeSettings(next) {
     console.error('Failed to write settings.json:', err);
     throw err;
   }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Active workspace                                                           */
+/* -------------------------------------------------------------------------- */
+
+function getActiveWorkspace() {
+  const s = readSettings();
+  return s.activeWorkspace || '';
+}
+
+function setActiveWorkspace(dirPath) {
+  const s = readSettings();
+  return writeSettings({ ...s, activeWorkspace: dirPath });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -142,7 +166,6 @@ async function fetchModels(cfg) {
 
     case 'anthropic': {
       if (!apiKey) throw new Error('API key is required for Anthropic.');
-      // Anthropic requires both x-api-key and anthropic-version headers.
       const url = `${baseUrl || DEFAULT_BASE_URLS.anthropic}/v1/models`;
       const res = await fetch(url, {
         method: 'GET',
@@ -164,8 +187,6 @@ async function fetchModels(cfg) {
     }
 
     case 'ollama': {
-      // Ollama exposes /api/tags (no auth). We also keep /v1/models as a fallback
-      // because newer Ollama builds expose an OpenAI-compatible endpoint.
       const tagsUrl = `${baseUrl || 'http://localhost:11434'}/api/tags`;
       const res = await fetch(tagsUrl, { method: 'GET' });
       if (!res.ok) {
@@ -193,7 +214,6 @@ async function fetchModels(cfg) {
       return models
         .map((m) => m?.name)
         .filter((id) => typeof id === 'string')
-        // Convert "models/gemini-1.5-flash" -> "gemini-1.5-flash" for display
         .map((id) => id.replace(/^models\//, ''))
         .sort();
     }
@@ -239,9 +259,8 @@ async function callLLM(settings, messages) {
         throw new Error(`API key is required for ${provider}.`);
       }
       const client = new OpenAI({
-        apiKey: apiKey || 'ollama', // Ollama doesn't care about the key, but the SDK requires one.
+        apiKey: apiKey || 'ollama',
         baseURL: baseUrl || DEFAULT_BASE_URLS[provider],
-        // OpenRouter likes these headers for attribution; harmless elsewhere.
         defaultHeaders: provider === 'openrouter' ? {
           'HTTP-Referer': 'https://github.com/Razisafir/kovix-mvp',
           'X-Title': 'Kovix MVP',
@@ -260,7 +279,6 @@ async function callLLM(settings, messages) {
     case 'anthropic': {
       if (!apiKey) throw new Error('API key is required for Anthropic.');
       const url = `${baseUrl || DEFAULT_BASE_URLS.anthropic}/v1/messages`;
-      // Anthropic splits system prompt from messages.
       const sysMsg = messages.find((m) => m.role === 'system');
       const userTurns = messages.filter((m) => m.role !== 'system').map((m) => ({
         role: m.role === 'assistant' ? 'assistant' : 'user',
@@ -296,7 +314,6 @@ async function callLLM(settings, messages) {
     case 'gemini': {
       if (!apiKey) throw new Error('API key is required for Gemini.');
       const url = `${baseUrl || DEFAULT_BASE_URLS.gemini}/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
-      // Gemini has its own schema. We flatten messages into contents[].
       const contents = messages
         .filter((m) => m.role !== 'system')
         .map((m) => ({
@@ -343,25 +360,178 @@ async function callLLM(settings, messages) {
  */
 function extractCodeBlock(text) {
   if (typeof text !== 'string' || !text) return null;
-  // Match the first fenced block. The fence may be ``` or ~~~, optionally followed
-  // by a language tag on the same line.
   const re = /```[ \t]*([\w+-]*)[ \t]*\r?\n([\s\S]*?)```|~~~[ \t]*([\w+-]*)[ \t]*\r?\n([\s\S]*?)~~~/;
   const m = text.match(re);
   if (m) {
-    // group 2 = ``` body, group 4 = ~~~ body
     return (m[2] != null ? m[2] : m[4] || '').replace(/\s+$/, '');
   }
   return null;
+}
+
+/**
+ * Extract the language tag of the first code block, e.g. "html" or "javascript".
+ * Used to choose a sensible filename when writing to the workspace.
+ */
+function extractCodeBlockLang(text) {
+  if (typeof text !== 'string' || !text) return '';
+  const re = /```[ \t]*([\w+-]*)[ \t]*\r?\n[\s\S]*?```|~~~[ \t]*([\w+-]*)[ \t]*\r?\n[\s\S]*?~~~/;
+  const m = text.match(re);
+  if (!m) return '';
+  return (m[1] || m[2] || '').toLowerCase();
+}
+
+/**
+ * Pick a filename for the extracted code based on its language tag.
+ * Defaults to output.txt for unknown languages.
+ */
+function pickOutputFilename(lang) {
+  switch ((lang || '').toLowerCase()) {
+    case 'html':
+    case 'htm':
+      return 'index.html';
+    case 'javascript':
+    case 'js':
+    case 'jsx':
+    case 'mjs':
+    case 'cjs':
+      return 'script.js';
+    case 'typescript':
+    case 'ts':
+    case 'tsx':
+      return 'script.ts';
+    case 'css':
+      return 'style.css';
+    case 'json':
+      return 'data.json';
+    case 'python':
+    case 'py':
+      return 'script.py';
+    case 'markdown':
+    case 'md':
+      return 'output.md';
+    case 'bash':
+    case 'sh':
+    case 'shell':
+      return 'script.sh';
+    default:
+      return 'output.txt';
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* File tree                                                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Build a file tree for a directory, recursively to `maxDepth`.
+ * Returns: { name, path (absolute), type: 'file'|'dir', children?: [] }
+ *
+ * Filters out IGNORED_DIRS and dotfiles at the top level.
+ */
+async function buildTree(dirPath, maxDepth = 1, currentDepth = 0) {
+  const node = {
+    name: path.basename(dirPath),
+    path: dirPath,
+    type: 'dir',
+    children: [],
+  };
+  if (currentDepth >= maxDepth) return node;
+
+  let entries;
+  try {
+    entries = await fsp.readdir(dirPath, { withFileTypes: true });
+  } catch (err) {
+    node.error = err.message;
+    return node;
+  }
+
+  // Sort: directories first, then files, alphabetical within each group.
+  entries.sort((a, b) => {
+    const aDir = a.isDirectory() ? 0 : 1;
+    const bDir = b.isDirectory() ? 0 : 1;
+    if (aDir !== bDir) return aDir - bDir;
+    return a.name.localeCompare(b.name);
+  });
+
+  for (const entry of entries) {
+    if (IGNORED_DIRS.has(entry.name)) continue;
+    if (entry.name.startsWith('.') && entry.name !== '.env') continue;
+    const fullPath = path.join(dirPath, entry.name);
+    if (entry.isDirectory()) {
+      const child = await buildTree(fullPath, maxDepth, currentDepth + 1);
+      node.children.push(child);
+    } else if (entry.isFile()) {
+      node.children.push({
+        name: entry.name,
+        path: fullPath,
+        type: 'file',
+      });
+    }
+  }
+  return node;
+}
+
+/**
+ * Read a file as UTF-8 text if it's under MAX_READ_BYTES. Returns:
+ *   { ok: true, content, path, name, size, binary: false }
+ *   { ok: true, content: '<binary file>', path, name, size, binary: true }
+ *   { ok: false, error } on failure
+ */
+async function readTextFile(filePath) {
+  try {
+    const stat = await fsp.stat(filePath);
+    if (!stat.isFile()) {
+      return { ok: false, error: 'Not a file.' };
+    }
+    const sizeBytes = stat.size;
+    if (sizeBytes > MAX_READ_BYTES) {
+      return {
+        ok: true,
+        path: filePath,
+        name: path.basename(filePath),
+        size: sizeBytes,
+        binary: true,
+        content: `<file too large to display: ${sizeBytes} bytes>`,
+      };
+    }
+    // Detect binary: read first 4 KB and look for NUL bytes.
+    const fd = await fsp.open(filePath, 'r');
+    try {
+      const buf = Buffer.alloc(Math.min(4096, sizeBytes));
+      const { bytesRead } = await fd.read(buf, 0, buf.length, 0);
+      const slice = buf.slice(0, bytesRead);
+      const isBinary = slice.includes(0);
+      if (isBinary) {
+        return {
+          ok: true,
+          path: filePath,
+          name: path.basename(filePath),
+          size: sizeBytes,
+          binary: true,
+          content: `<binary file: ${sizeBytes} bytes>`,
+        };
+      }
+    } finally {
+      await fd.close();
+    }
+    const content = await fsp.readFile(filePath, 'utf8');
+    return {
+      ok: true,
+      path: filePath,
+      name: path.basename(filePath),
+      size: sizeBytes,
+      binary: false,
+      content,
+    };
+  } catch (err) {
+    return { ok: false, error: err && err.message ? err.message : String(err) };
+  }
 }
 
 /* -------------------------------------------------------------------------- */
 /* Conversation state                                                         */
 /* -------------------------------------------------------------------------- */
 
-/**
- * Per-window conversation state. We only support one window in the MVP,
- * but keep this structured so it's easy to extend later.
- */
 const convoState = {
   step: 'idea',
   messages: [], // [{role:'system'|'user'|'assistant', content:string}]
@@ -379,7 +549,27 @@ function advanceStep(current) {
 }
 
 /* -------------------------------------------------------------------------- */
-/* IPC handlers                                                               */
+/* Renderer notification helpers                                              */
+/* -------------------------------------------------------------------------- */
+
+let mainWindow = null;
+
+function sendToRenderer(channel, payload) {
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send(channel, payload);
+    }
+  } catch (err) {
+    console.error(`Failed to send ${channel} to renderer:`, err);
+  }
+}
+
+function notifyTreeChanged(relativePath) {
+  sendToRenderer('fs:tree-changed', { relativePath });
+}
+
+/* -------------------------------------------------------------------------- */
+/* IPC handlers — Settings & Models                                           */
 /* -------------------------------------------------------------------------- */
 
 ipcMain.handle('get-settings', async () => {
@@ -419,19 +609,91 @@ ipcMain.handle('fetch-models', async (_evt, cfg) => {
   }
 });
 
+/* -------------------------------------------------------------------------- */
+/* IPC handlers — Workspace & Files                                           */
+/* -------------------------------------------------------------------------- */
+
+ipcMain.handle('dialog:open-folder', async () => {
+  try {
+    const result = await dialog.showOpenDialog({
+      title: 'Select Workspace Folder',
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (result.canceled || !result.filePaths || result.filePaths.length === 0) {
+      return { ok: false, canceled: true };
+    }
+    const dirPath = result.filePaths[0];
+    setActiveWorkspace(dirPath);
+    // Notify any open renderer that the workspace (and thus the tree) changed.
+    notifyTreeChanged(null);
+    return { ok: true, path: dirPath };
+  } catch (err) {
+    console.error('dialog:open-folder error:', err);
+    return { ok: false, error: err && err.message ? err.message : String(err) };
+  }
+});
+
+ipcMain.handle('fs:get-workspace', async () => {
+  return { path: getActiveWorkspace() };
+});
+
+ipcMain.handle('fs:get-tree', async () => {
+  try {
+    const ws = getActiveWorkspace();
+    if (!ws) {
+      return { ok: false, error: 'No workspace open.' };
+    }
+    if (!fs.existsSync(ws) || !fs.statSync(ws).isDirectory()) {
+      return { ok: false, error: 'Workspace path is not a directory.' };
+    }
+    const tree = await buildTree(ws, 2); // 2 levels deep: root + immediate children + one level into subdirs
+    return { ok: true, root: ws, tree };
+  } catch (err) {
+    console.error('fs:get-tree error:', err);
+    return { ok: false, error: err && err.message ? err.message : String(err) };
+  }
+});
+
+ipcMain.handle('fs:read-file', async (_evt, filePath) => {
+  try {
+    if (typeof filePath !== 'string' || !filePath) {
+      return { ok: false, error: 'No file path provided.' };
+    }
+    // Sanity: file must live inside the active workspace (if one is set).
+    const ws = getActiveWorkspace();
+    const resolved = path.resolve(filePath);
+    if (ws) {
+      const wsResolved = path.resolve(ws);
+      if (resolved !== wsResolved && !resolved.startsWith(wsResolved + path.sep)) {
+        return { ok: false, error: 'File is outside the active workspace.' };
+      }
+    }
+    return await readTextFile(resolved);
+  } catch (err) {
+    console.error('fs:read-file error:', err);
+    return { ok: false, error: err && err.message ? err.message : String(err) };
+  }
+});
+
+/* -------------------------------------------------------------------------- */
+/* IPC handlers — Chat & state machine                                        */
+/* -------------------------------------------------------------------------- */
+
 /**
  * send-message handler — runs the state machine.
  *
  * Renderer contract:
- *   request:  { text: string }            // user's latest message
+ *   request:  { text: string }
  *   response: {
  *     ok: boolean,
  *     step: string,                       // current step after this turn
  *     nextStep: string,                   // step the UI should switch to
  *     assistant: string,                  // assistant text to display (may be empty)
- *     info?: string,                      // success/info banner (e.g. "Success! Code written to output.txt")
+ *     info?: string,                      // success/info banner
  *     error?: string,                     // error banner (red)
- *     wroteFile?: boolean,                // true if output.txt was written
+ *     wroteFile?: boolean,                // true if a file was written
+ *     writtenPath?: string,               // absolute path of the written file (if any)
+ *     writtenName?: string,               // basename of the written file (if any)
  *   }
  */
 ipcMain.handle('send-message', async (_evt, req) => {
@@ -441,6 +703,8 @@ ipcMain.handle('send-message', async (_evt, req) => {
     }
 
     const settings = readSettings();
+
+    // Guard 1: provider configured?
     if (!settings.provider || !settings.model) {
       return {
         ok: false,
@@ -448,6 +712,27 @@ ipcMain.handle('send-message', async (_evt, req) => {
         nextStep: convoState.step,
         assistant: '',
         error: 'Please open Settings and configure a provider first.',
+      };
+    }
+
+    // Guard 2: workspace open?
+    const workspace = settings.activeWorkspace || '';
+    if (!workspace) {
+      return {
+        ok: false,
+        step: convoState.step,
+        nextStep: convoState.step,
+        assistant: '',
+        error: 'Please open a folder in the File Manager before starting.',
+      };
+    }
+    if (!fs.existsSync(workspace) || !fs.statSync(workspace).isDirectory()) {
+      return {
+        ok: false,
+        step: convoState.step,
+        nextStep: convoState.step,
+        assistant: '',
+        error: `Workspace not found: ${workspace}. Please open a different folder.`,
       };
     }
 
@@ -462,14 +747,12 @@ ipcMain.handle('send-message', async (_evt, req) => {
       throw new Error(`Unknown step: ${convoState.step}`);
     }
 
-    // Ensure there's exactly one system message at the top, set for the current step.
     if (convoState.messages.length === 0 || convoState.messages[0].role !== 'system') {
       convoState.messages.unshift({ role: 'system', content: systemPrompt });
     } else {
       convoState.messages[0] = { role: 'system', content: systemPrompt };
     }
 
-    // Append the user's message.
     convoState.messages.push({ role: 'user', content: userText });
 
     // Call the LLM.
@@ -479,11 +762,10 @@ ipcMain.handle('send-message', async (_evt, req) => {
     const currentStep = convoState.step;
     const nextStep = advanceStep(currentStep);
 
-    // Execute step: parse code block and write to disk.
+    // Execute step: parse code block and write to disk INSIDE the workspace.
     if (currentStep === 'execute') {
       const code = extractCodeBlock(assistantText);
       if (!code) {
-        // Don't advance — let the user retry.
         return {
           ok: false,
           step: currentStep,
@@ -492,29 +774,36 @@ ipcMain.handle('send-message', async (_evt, req) => {
           error: 'Error: LLM did not output a code block.',
         };
       }
+      const lang = extractCodeBlockLang(assistantText);
+      const filename = pickOutputFilename(lang);
+      const outPath = path.join(workspace, filename);
       try {
-        fs.writeFileSync(OUTPUT_PATH, code, 'utf8');
+        fs.writeFileSync(outPath, code, 'utf8');
+        // Tell the renderer to refresh its file tree.
+        notifyTreeChanged(filename);
         return {
           ok: true,
           step: currentStep,
-          nextStep: currentStep, // terminal step
+          nextStep: currentStep,
           assistant: assistantText,
-          info: 'Success! Code written to output.txt',
+          info: `Success! Code written to ${filename}`,
           wroteFile: true,
+          writtenPath: outPath,
+          writtenName: filename,
         };
       } catch (writeErr) {
-        console.error('write output.txt failed:', writeErr);
+        console.error('write output file failed:', writeErr);
         return {
           ok: false,
           step: currentStep,
           nextStep: currentStep,
           assistant: assistantText,
-          error: `Error writing output.txt: ${writeErr.message}`,
+          error: `Error writing ${filename}: ${writeErr.message}`,
         };
       }
     }
 
-    // Non-execute steps: just advance and let the renderer show the assistant text.
+    // Non-execute steps: advance and let the renderer show the assistant text.
     convoState.step = nextStep;
     return {
       ok: true,
@@ -534,9 +823,6 @@ ipcMain.handle('send-message', async (_evt, req) => {
   }
 });
 
-/**
- * Reset the conversation back to the Idea step.
- */
 ipcMain.handle('reset-convo', async () => {
   try {
     resetConvo();
@@ -548,21 +834,19 @@ ipcMain.handle('reset-convo', async () => {
 });
 
 ipcMain.handle('get-convo-state', async () => {
-  return { step: convoState.step, labels: STEP_LABELS };
+  return { step: convoState.step, labels: STEP_LABELS, workspace: getActiveWorkspace() };
 });
 
 /* -------------------------------------------------------------------------- */
 /* Window bootstrap                                                           */
 /* -------------------------------------------------------------------------- */
 
-let mainWindow = null;
-
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 820,
-    minWidth: 900,
-    minHeight: 600,
+    width: 1440,
+    height: 900,
+    minWidth: 1100,
+    minHeight: 650,
     backgroundColor: '#ffffff',
     title: 'Kovix MVP',
     webPreferences: {
@@ -592,7 +876,7 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-// Crash guard: log unhandled rejections instead of silently dying.
+// Crash guard.
 process.on('unhandledRejection', (err) => {
   console.error('Unhandled rejection:', err);
 });

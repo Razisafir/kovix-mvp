@@ -3,14 +3,16 @@
 /**
  * Kovix MVP — renderer (UI logic)
  *
- * Runs in the renderer process with contextIsolation enabled. The only bridge
- * to Node is window.kovix (exposed by preload.js). All LLM work happens in the
- * main process; this file just renders chat bubbles, drives the step indicator,
- * and wires up the settings modal.
+ * Three-pane layout:
+ *   LEFT   — 5-step workflow + File Manager
+ *   CENTER — Chat console + composer
+ *   RIGHT  — File Viewer
+ *
+ * Talks to the main process exclusively through window.kovix (see preload.js).
  */
 
 /* -------------------------------------------------------------------------- */
-/* Step metadata — keep a renderer-side copy for the UI labels                */
+/* Step metadata                                                              */
 /* -------------------------------------------------------------------------- */
 
 const STEP_ORDER = ['idea', 'refine', 'spec', 'plan', 'execute'];
@@ -21,13 +23,12 @@ const STEP_LABELS = {
   plan: 'Plan',
   execute: 'Execute',
 };
-
 const STEP_PLACEHOLDERS = {
   idea: 'Describe your idea…',
   refine: 'Answer the clarifying questions…',
   spec: 'Approve the spec, or ask for changes (Send to continue)…',
   plan: 'Approve the plan, or ask for changes (Send to continue)…',
-  execute: 'Send to execute step 1 and write code to output.txt…',
+  execute: 'Send to execute step 1 and write code to your workspace…',
 };
 
 /* -------------------------------------------------------------------------- */
@@ -35,34 +36,57 @@ const STEP_PLACEHOLDERS = {
 /* -------------------------------------------------------------------------- */
 
 const $ = (sel) => document.querySelector(sel);
+const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
 const els = {
   // Header
-  settingsBtn:  $('#settings-btn'),
-  resetBtn:     $('#reset-btn'),
+  settingsBtn:   $('#settings-btn'),
+  resetBtn:      $('#reset-btn'),
+  workspaceName: $('#workspace-name'),
 
-  // Sidebar
-  stepItems:    document.querySelectorAll('.step-item'),
+  // Sidebar — workflow
+  stepItems:     $$('.step-item'),
   statusProvider: $('#status-provider'),
   statusModel:    $('#status-model'),
+  stepPill:       $('#step-pill'),
+
+  // Sidebar — file manager
+  openFolderBtn: $('#open-folder-btn'),
+  fileTree:      $('#file-tree'),
 
   // Chat
-  messages:     $('#messages'),
-  input:        $('#input'),
-  sendBtn:      $('#send-btn'),
-  errorBanner:  $('#error-banner'),
-  infoBanner:   $('#info-banner'),
+  messages:      $('#messages'),
+  input:         $('#input'),
+  sendBtn:       $('#send-btn'),
+  errorBanner:   $('#error-banner'),
+  infoBanner:    $('#info-banner'),
+
+  // File viewer
+  viewerTitle:   $('#viewer-title'),
+  viewerMeta:    $('#viewer-meta'),
+  viewerBody:    $('#viewer-body'),
 
   // Settings modal
-  modal:        $('#settings-modal'),
-  providerSel:  $('#provider'),
-  apiKeyInput:  $('#api-key'),
-  baseUrlInput: $('#base-url'),
-  modelSel:     $('#model'),
-  fetchModelsBtn: $('#fetch-models-btn'),
+  modal:         $('#settings-modal'),
+  providerSel:   $('#provider'),
+  apiKeyInput:   $('#api-key'),
+  baseUrlInput:  $('#base-url'),
+  modelSel:      $('#model'),
+  fetchModelsBtn:  $('#fetch-models-btn'),
   saveSettingsBtn: $('#save-settings-btn'),
   settingsError: $('#settings-error'),
   settingsInfo:  $('#settings-info'),
+};
+
+/* -------------------------------------------------------------------------- */
+/* State                                                                      */
+/* -------------------------------------------------------------------------- */
+
+const state = {
+  currentStep: 'idea',
+  activeWorkspace: '',
+  selectedFilePath: '',     // absolute path of the file currently shown in the viewer
+  busy: false,
 };
 
 /* -------------------------------------------------------------------------- */
@@ -70,6 +94,7 @@ const els = {
 /* -------------------------------------------------------------------------- */
 
 function setActiveStep(step) {
+  state.currentStep = step;
   const idx = STEP_ORDER.indexOf(step);
   els.stepItems.forEach((li) => {
     const s = li.dataset.step;
@@ -78,35 +103,24 @@ function setActiveStep(step) {
     li.classList.toggle('done', liIdx < idx);
   });
   els.input.placeholder = STEP_PLACEHOLDERS[step] || 'Type a message…';
+  els.stepPill.textContent = `Step ${idx + 1} · ${STEP_LABELS[step]}`;
 }
 
 /* -------------------------------------------------------------------------- */
 /* Banners                                                                    */
 /* -------------------------------------------------------------------------- */
 
-function showError(msg) {
-  if (!msg) { els.errorBanner.classList.add('hidden'); return; }
-  els.errorBanner.textContent = msg;
-  els.errorBanner.classList.remove('hidden');
-}
-function clearError() { els.errorBanner.classList.add('hidden'); }
+function showError(msg)    { banner(els.errorBanner, msg); }
+function clearError()      { els.errorBanner.classList.add('hidden'); }
+function showInfo(msg)     { banner(els.infoBanner, msg); }
+function clearInfo()       { els.infoBanner.classList.add('hidden'); }
+function showSettingsError(msg) { banner(els.settingsError, msg); }
+function showSettingsInfo(msg)  { banner(els.settingsInfo, msg); }
 
-function showInfo(msg) {
-  if (!msg) { els.infoBanner.classList.add('hidden'); return; }
-  els.infoBanner.textContent = msg;
-  els.infoBanner.classList.remove('hidden');
-}
-function clearInfo() { els.infoBanner.classList.add('hidden'); }
-
-function showSettingsError(msg) {
-  if (!msg) { els.settingsError.classList.add('hidden'); return; }
-  els.settingsError.textContent = msg;
-  els.settingsError.classList.remove('hidden');
-}
-function showSettingsInfo(msg) {
-  if (!msg) { els.settingsInfo.classList.add('hidden'); return; }
-  els.settingsInfo.textContent = msg;
-  els.settingsInfo.classList.remove('hidden');
+function banner(el, msg) {
+  if (!msg) { el.classList.add('hidden'); return; }
+  el.textContent = msg;
+  el.classList.remove('hidden');
 }
 
 /* -------------------------------------------------------------------------- */
@@ -123,14 +137,16 @@ function escapeHtml(s) {
 }
 
 /**
- * Very small, safe markdown renderer for AI bubbles:
- *   - fenced ```lang\ncode``` blocks -> <pre><code>
- *   - inline `code` -> <code>
- *   - **bold** -> <strong>
- *   - ## headings, - bullet lists, paragraphs
+ * Tiny, safe markdown renderer for AI bubbles:
+ *   fenced ```lang\ncode``` -> <pre><code>
+ *   inline `code`            -> <code>
+ *   **bold**                 -> <strong>
+ *   ## / ### headings
+ *   - bullet lists, 1. numbered lists
+ *   blank-line separated paragraphs
  *
- * We escape everything first, then layer on a few transformations on the
- * escaped string, so we never inject raw HTML from the LLM.
+ * Everything is escaped first; transformations operate on the escaped string,
+ * so no raw HTML from the LLM ever reaches the DOM.
  */
 function renderMarkdown(md) {
   const escaped = escapeHtml(md || '');
@@ -139,33 +155,22 @@ function renderMarkdown(md) {
 
   for (const part of parts) {
     if (/^```/.test(part)) {
-      // strip ```lang and closing ```
       const body = part.replace(/^```[a-zA-Z0-9+-]*\n?/, '').replace(/```$/, '');
       out.push(`<pre><code>${body}</code></pre>`);
     } else {
       let block = part;
-      // Inline code
       block = block.replace(/`([^`]+)`/g, '<code>$1</code>');
-      // Bold
       block = block.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-      // Headings (## and ###)
       block = block.replace(/^###\s+(.*)$/gm, '<h3>$1</h3>');
       block = block.replace(/^##\s+(.*)$/gm, '<h2>$1</h2>');
-      // Bullet lists
       block = block.replace(/(?:^|\n)((?:- .*(?:\n|$))+)/g, (m, group) => {
-        const items = group.trim().split(/\n/).map((line) =>
-          line.replace(/^- /, '').trim()
-        );
+        const items = group.trim().split(/\n/).map((l) => l.replace(/^- /, '').trim());
         return '\n<ul>' + items.map((i) => `<li>${i}</li>`).join('') + '</ul>';
       });
-      // Numbered lists
       block = block.replace(/(?:^|\n)((?:\d+\. .*(?:\n|$))+)/g, (m, group) => {
-        const items = group.trim().split(/\n/).map((line) =>
-          line.replace(/^\d+\. /, '').trim()
-        );
+        const items = group.trim().split(/\n/).map((l) => l.replace(/^\d+\. /, '').trim());
         return '\n<ol>' + items.map((i) => `<li>${i}</li>`).join('') + '</ol>';
       });
-      // Paragraphs: blank-line separated
       block = block
         .split(/\n{2,}/)
         .map((p) => p.trim())
@@ -208,16 +213,12 @@ function removeWelcomeIfPresent() {
 }
 
 function setBusy(busy) {
-  els.sendBtn.disabled = !!busy;
-  els.input.disabled = !!busy;
-  els.sendBtn.textContent = busy ? 'Working…' : 'Send';
-  if (busy) {
-    els.fetchModelsBtn.disabled = true;
-    els.fetchModelsBtn.textContent = 'Fetching…';
-  } else {
-    els.fetchModelsBtn.disabled = false;
-    els.fetchModelsBtn.textContent = 'Fetch Models';
-  }
+  state.busy = !!busy;
+  els.sendBtn.disabled = state.busy;
+  els.input.disabled = state.busy;
+  els.sendBtn.textContent = state.busy ? 'Working…' : 'Send';
+  els.fetchModelsBtn.disabled = state.busy;
+  els.fetchModelsBtn.textContent = state.busy ? 'Fetching…' : 'Fetch Models';
 }
 
 /* -------------------------------------------------------------------------- */
@@ -226,7 +227,222 @@ function setBusy(busy) {
 
 function updateStatusCard(settings) {
   els.statusProvider.textContent = settings.provider || '—';
-  els.statusModel.textContent = settings.model || '—';
+  els.statusModel.textContent    = settings.model || '—';
+}
+
+function updateWorkspacePill(path) {
+  state.activeWorkspace = path || '';
+  if (!path) {
+    els.workspaceName.textContent = 'No folder';
+    els.workspaceName.title = 'No workspace folder open';
+  } else {
+    // Show basename for the pill, full path in the tooltip.
+    const name = path.split(/[\\/]/).filter(Boolean).pop() || path;
+    els.workspaceName.textContent = name;
+    els.workspaceName.title = path;
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* File tree                                                                  */
+/* -------------------------------------------------------------------------- */
+
+function fileIcon(name, isDir) {
+  if (isDir) {
+    return `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+            </svg>`;
+  }
+  const ext = (name.split('.').pop() || '').toLowerCase();
+  // Color-code by file type
+  let color = 'currentColor';
+  if (['html', 'htm'].includes(ext)) color = '#e06c2a';
+  else if (['js', 'mjs', 'cjs', 'jsx'].includes(ext)) color = '#d4b106';
+  else if (['ts', 'tsx'].includes(ext)) color = '#2b6cb0';
+  else if (['css', 'scss', 'sass'].includes(ext)) color = '#39a0d6';
+  else if (['json'].includes(ext)) color = '#7c7a72';
+  else if (['md', 'markdown'].includes(ext)) color = '#5b8def';
+  else if (['py'].includes(ext)) color = '#3776ab';
+  else if (['txt'].includes(ext)) color = '#7c7a72';
+  return `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="${color}"
+            stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+            <polyline points="14 2 14 8 20 8"></polyline>
+          </svg>`;
+}
+
+function renderTree(node, depth = 0) {
+  // node = { name, path, type, children?, error? }
+  const wrap = document.createDocumentFragment();
+
+  const row = document.createElement('div');
+  row.className = 'tree-node';
+  row.dataset.path = node.path;
+  row.dataset.type = node.type;
+  row.dataset.name = node.name;
+  row.innerHTML =
+    `<span class="tree-icon">${fileIcon(node.name, node.type === 'dir')}</span>` +
+    `<span class="tree-name">${escapeHtml(node.name)}</span>`;
+  wrap.appendChild(row);
+
+  if (node.type === 'dir') {
+    const children = document.createElement('div');
+    children.className = 'tree-children';
+    if (Array.isArray(node.children)) {
+      for (const child of node.children) {
+        children.appendChild(renderTree(child, depth + 1));
+      }
+    }
+    if (node.error) {
+      const err = document.createElement('div');
+      err.className = 'tree-node';
+      err.style.color = 'var(--danger)';
+      err.textContent = `⚠ ${node.error}`;
+      children.appendChild(err);
+    }
+    // Top-level node (the workspace root) is always expanded.
+    // Deeper directories start collapsed if empty, expanded if they have children.
+    if (depth === 0) {
+      children.classList.remove('hidden');
+    } else if (node.children && node.children.length === 0) {
+      children.classList.add('hidden');
+    }
+    wrap.appendChild(children);
+
+    row.addEventListener('click', (e) => {
+      e.stopPropagation();
+      children.classList.toggle('hidden');
+    });
+  } else {
+    row.addEventListener('click', (e) => {
+      e.stopPropagation();
+      selectFile(node.path, row);
+    });
+  }
+
+  return wrap;
+}
+
+async function refreshFileTree(trySelectPath) {
+  // Clear current tree
+  els.fileTree.innerHTML = '';
+
+  if (!state.activeWorkspace) {
+    els.fileTree.innerHTML =
+      '<div class="file-tree-empty">No folder open.<br />Click <strong>Open</strong> to pick a workspace.</div>';
+    return;
+  }
+
+  let res;
+  try {
+    res = await window.kovix.getTree();
+  } catch (err) {
+    els.fileTree.innerHTML =
+      `<div class="file-tree-empty">Error: ${escapeHtml(err.message || String(err))}</div>`;
+    return;
+  }
+
+  if (!res.ok) {
+    els.fileTree.innerHTML =
+      `<div class="file-tree-empty">Error: ${escapeHtml(res.error || 'unknown')}</div>`;
+    return;
+  }
+
+  if (!res.tree || !Array.isArray(res.tree.children)) {
+    els.fileTree.innerHTML =
+      '<div class="file-tree-empty">Empty workspace.</div>';
+    return;
+  }
+
+  // Render the root's children (skip rendering the root row itself for cleanliness)
+  for (const child of res.tree.children) {
+    els.fileTree.appendChild(renderTree(child, 0));
+  }
+
+  // If a file was just written, try to auto-select & open it.
+  if (trySelectPath) {
+    const row = els.fileTree.querySelector(`.tree-node[data-path="${cssEscape(trySelectPath)}"]`);
+    if (row && row.dataset.type === 'file') {
+      selectFile(row.dataset.path, row);
+    }
+  }
+}
+
+/**
+ * Minimal CSS attribute-value escape (for querySelector on data-path).
+ * Paths may contain characters that need backslash-escaping inside [attr="…"].
+ */
+function cssEscape(str) {
+  return String(str).replace(/["\\]/g, '\\$&');
+}
+
+async function selectFile(filePath, rowEl) {
+  // Mark selected in the tree
+  $$('.tree-node.selected').forEach((n) => n.classList.remove('selected'));
+  if (rowEl) rowEl.classList.add('selected');
+
+  state.selectedFilePath = filePath;
+  const name = filePath.split(/[\\/]/).filter(Boolean).pop() || filePath;
+  els.viewerTitle.textContent = name;
+  els.viewerMeta.textContent = 'Loading…';
+  els.viewerBody.innerHTML = '<div class="viewer-binary">Loading…</div>';
+
+  let res;
+  try {
+    res = await window.kovix.readFile(filePath);
+  } catch (err) {
+    els.viewerMeta.textContent = 'Error';
+    els.viewerBody.innerHTML =
+      `<div class="viewer-binary">Error: ${escapeHtml(err.message || String(err))}</div>`;
+    return;
+  }
+
+  if (!res.ok) {
+    els.viewerMeta.textContent = 'Error';
+    els.viewerBody.innerHTML =
+      `<div class="viewer-binary">Error: ${escapeHtml(res.error || 'unknown')}</div>`;
+    return;
+  }
+
+  const sizeStr = formatBytes(res.size || 0);
+  if (res.binary) {
+    els.viewerMeta.textContent = `${res.name} · ${sizeStr} · binary`;
+    els.viewerBody.innerHTML =
+      `<div class="viewer-binary">${escapeHtml(res.content)}</div>`;
+  } else {
+    els.viewerMeta.textContent = `${res.name} · ${sizeStr}`;
+    const pre = document.createElement('pre');
+    pre.className = 'viewer-pre';
+    pre.textContent = res.content; // textContent = safe, no HTML injection
+    els.viewerBody.innerHTML = '';
+    els.viewerBody.appendChild(pre);
+  }
+}
+
+function formatBytes(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Open folder                                                                */
+/* -------------------------------------------------------------------------- */
+
+async function handleOpenFolder() {
+  try {
+    const res = await window.kovix.openFolder();
+    if (!res.ok) {
+      if (res.canceled) return; // silent on cancel
+      showError(res.error || 'Failed to open folder');
+      return;
+    }
+    updateWorkspacePill(res.path);
+    await refreshFileTree();
+  } catch (err) {
+    showError(err && err.message ? err.message : String(err));
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -238,14 +454,11 @@ function openSettings() {
   showSettingsInfo('');
   els.modal.classList.remove('hidden');
   els.modal.setAttribute('aria-hidden', 'false');
-  // Load current settings into the form
   window.kovix.getSettings().then((s) => {
     els.providerSel.value = s.provider || '';
     els.apiKeyInput.value = s.apiKey || '';
     els.baseUrlInput.value = s.baseUrl || '';
     if (s.model) {
-      // If we already have a saved model, seed the dropdown with it so the user
-      // can see what's configured without re-fetching.
       els.modelSel.innerHTML = `<option value="${escapeHtml(s.model)}">${escapeHtml(s.model)}</option>`;
       els.modelSel.value = s.model;
       els.modelSel.disabled = false;
@@ -307,6 +520,7 @@ async function handleSaveSettings() {
     apiKey:   els.apiKeyInput.value.trim(),
     baseUrl:  els.baseUrlInput.value.trim(),
     model:    els.modelSel.value,
+    activeWorkspace: state.activeWorkspace, // preserve existing workspace
   };
   if (!next.provider) {
     showSettingsError('Please select a provider.');
@@ -336,6 +550,12 @@ async function handleSend() {
   const text = els.input.value.trim();
   if (!text) return;
 
+  // Workspace guard (defensive — backend also checks).
+  if (!state.activeWorkspace) {
+    showError('Please open a folder in the File Manager before starting.');
+    return;
+  }
+
   removeWelcomeIfPresent();
   appendUserMessage(text);
   els.input.value = '';
@@ -360,6 +580,11 @@ async function handleSend() {
     if (res.nextStep) {
       setActiveStep(res.nextStep);
     }
+
+    // If the agent wrote a file, refresh the tree and auto-open it in the viewer.
+    if (res.wroteFile && res.writtenPath) {
+      await refreshFileTree(res.writtenPath);
+    }
   } catch (err) {
     showError(err && err.message ? err.message : String(err));
   } finally {
@@ -380,8 +605,8 @@ async function handleReset() {
     w.innerHTML = `
       <div class="welcome-title">Welcome to Kovix MVP</div>
       <div class="welcome-sub">
-        Start by typing an idea. The 5-step workflow will refine it into a spec, plan the
-        build, then write code to <code>output.txt</code>.
+        Open a workspace folder, then type an idea. The 5-step workflow will refine it
+        into a spec, plan the build, then write code into your workspace.
       </div>`;
     els.messages.appendChild(w);
     setActiveStep('idea');
@@ -407,20 +632,20 @@ function autoResizeInput() {
 /* -------------------------------------------------------------------------- */
 
 function bindEvents() {
+  // Chat
   els.sendBtn.addEventListener('click', handleSend);
-
   els.input.addEventListener('input', autoResizeInput);
   els.input.addEventListener('keydown', (e) => {
-    // Enter to send, Shift+Enter for newline
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
     }
   });
 
+  // Reset
   els.resetBtn.addEventListener('click', handleReset);
 
-  // Settings modal open/close
+  // Settings modal
   els.settingsBtn.addEventListener('click', openSettings);
   els.modal.querySelectorAll('[data-close]').forEach((el) =>
     el.addEventListener('click', closeSettings)
@@ -431,17 +656,16 @@ function bindEvents() {
     }
   });
 
-  // Settings modal actions
+  // Settings actions
   els.fetchModelsBtn.addEventListener('click', handleFetchModels);
   els.saveSettingsBtn.addEventListener('click', handleSaveSettings);
 
-  // When user changes provider, clear the model dropdown so they re-fetch
+  // Provider change → reset model dropdown + update baseUrl placeholder
   els.providerSel.addEventListener('change', () => {
     els.modelSel.innerHTML = '<option value="">Click “Fetch Models” first</option>';
     els.modelSel.disabled = true;
     showSettingsError('');
     showSettingsInfo('');
-    // Pre-fill Base URL placeholder based on provider (visible hint only)
     const hints = {
       openai:     'https://api.openai.com/v1',
       openrouter: 'https://openrouter.ai/api/v1',
@@ -451,14 +675,32 @@ function bindEvents() {
     };
     els.baseUrlInput.placeholder = hints[els.providerSel.value] || '';
   });
+
+  // File manager
+  els.openFolderBtn.addEventListener('click', handleOpenFolder);
+
+  // Listen for tree-changed events from main (e.g. after Execute writes a file).
+  // The Execute path itself also calls refreshFileTree() with the specific file,
+  // but this keeps the tree in sync if the workspace changes from elsewhere.
+  window.kovix.onTreeChanged((_payload) => {
+    refreshFileTree().catch((err) => {
+      console.error('tree refresh failed:', err);
+    });
+  });
 }
 
 async function init() {
   bindEvents();
   setActiveStep('idea');
+
   try {
     const s = await window.kovix.getSettings();
     updateStatusCard(s);
+    updateWorkspacePill(s.activeWorkspace || '');
+    // If a workspace is already persisted, render its tree on boot.
+    if (s.activeWorkspace) {
+      await refreshFileTree();
+    }
   } catch (err) {
     showError(err && err.message ? err.message : String(err));
   }
