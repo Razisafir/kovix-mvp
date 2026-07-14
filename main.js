@@ -293,7 +293,7 @@ async function callLLM(settings, messages) {
         // user sees the real error message (401, 429, etc.) instantly.
         maxRetries: 0,
         // SDK-level timeout: aborts the HTTP request after 45s.
-        timeout: 45_000,
+        timeout: 40_000,
         defaultHeaders: provider === 'openrouter' ? {
           'HTTP-Referer': 'https://github.com/Razisafir/kovix-mvp',
           'X-Title': 'Kovix MVP',
@@ -328,7 +328,7 @@ async function callLLM(settings, messages) {
       };
       if (sysMsg) body.system = sysMsg.content;
       const ac = new AbortController();
-      const timeout = setTimeout(() => ac.abort(), 70_000);
+      const timeout = setTimeout(() => ac.abort(), 40_000);
       let res;
       try {
         res = await fetch(url, {
@@ -344,7 +344,7 @@ async function callLLM(settings, messages) {
       } catch (err) {
         clearTimeout(timeout);
         if (err && err.name === 'AbortError') {
-          throw new Error('Anthropic request timed out after 70s.');
+          throw new Error('Anthropic request timed out after 40s.');
         }
         throw err;
       }
@@ -380,7 +380,7 @@ async function callLLM(settings, messages) {
         body.systemInstruction = { parts: [{ text: sysMsg.content }] };
       }
       const ac = new AbortController();
-      const timeout = setTimeout(() => ac.abort(), 70_000);
+      const timeout = setTimeout(() => ac.abort(), 40_000);
       let res;
       try {
         res = await fetch(url, {
@@ -392,7 +392,7 @@ async function callLLM(settings, messages) {
       } catch (err) {
         clearTimeout(timeout);
         if (err && err.name === 'AbortError') {
-          throw new Error('Gemini request timed out after 70s.');
+          throw new Error('Gemini request timed out after 40s.');
         }
         throw err;
       }
@@ -824,6 +824,36 @@ ipcMain.handle('fetch-models', async (_evt, cfg) => {
   } catch (err) {
     console.error('fetch-models error:', err);
     throw err;
+  }
+});
+
+/**
+ * Test Connection — does a quick fetch-models call with a short timeout
+ * to verify the API key + network are working before the user chats.
+ * Returns { ok: true, modelCount } or { ok: false, error }.
+ */
+ipcMain.handle('test-connection', async (_evt, cfg) => {
+  try {
+    if (!cfg || typeof cfg !== 'object') {
+      return { ok: false, error: 'Invalid config.' };
+    }
+    console.log('[test-connection] testing provider =', cfg.provider);
+    // Race the fetchModels against a 15s timeout — if it takes longer, the
+    // network is too slow for reliable chat.
+    const result = await withTimeout(fetchModels(cfg), 15_000, 'Connection test');
+    if (!result.ok) {
+      console.log('[test-connection] failed:', result.error);
+      return { ok: false, error: result.error };
+    }
+    const models = result.value;
+    if (!Array.isArray(models) || models.length === 0) {
+      return { ok: false, error: 'Provider returned no models. Check your API key.' };
+    }
+    console.log('[test-connection] success, models =', models.length);
+    return { ok: true, modelCount: models.length };
+  } catch (err) {
+    console.error('[test-connection] error:', err);
+    return { ok: false, error: err && err.message ? err.message : String(err) };
   }
 });
 

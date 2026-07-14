@@ -104,6 +104,7 @@ const els = {
   modelSel:      $('#model'),
   fetchModelsBtn:  $('#fetch-models-btn'),
   saveSettingsBtn: $('#save-settings-btn'),
+  testConnectionBtn: $('#test-connection-btn'),
   settingsError: $('#settings-error'),
   settingsInfo:  $('#settings-info'),
 };
@@ -577,6 +578,49 @@ async function handleFetchModels() {
   }
 }
 
+async function handleTestConnection() {
+  showSettingsError('');
+  showSettingsInfo('');
+  const cfg = {
+    provider: els.providerSel.value,
+    apiKey:   els.apiKeyInput.value.trim(),
+    baseUrl:  els.baseUrlInput.value.trim(),
+  };
+  if (!cfg.provider) {
+    showSettingsError('Please select a provider first.');
+    return;
+  }
+
+  const btn = els.testConnectionBtn;
+  btn.disabled = true;
+  btn.classList.remove('success', 'failure');
+  btn.querySelector('span:last-child').textContent = 'Testing...';
+  const icon = btn.querySelector('.material-symbols-outlined');
+  if (icon) icon.textContent = 'progress_activity';
+
+  try {
+    const res = await window.kovix.testConnection(cfg);
+    if (res.ok) {
+      btn.classList.add('success');
+      btn.querySelector('span:last-child').textContent = `Connected! ${res.modelCount} models available`;
+      if (icon) icon.textContent = 'check_circle';
+      showSettingsInfo(`Connection successful. ${res.modelCount} models available.`);
+    } else {
+      btn.classList.add('failure');
+      btn.querySelector('span:last-child').textContent = 'Connection Failed';
+      if (icon) icon.textContent = 'error';
+      showSettingsError(res.error || 'Connection failed. Check your API key and network.');
+    }
+  } catch (err) {
+    btn.classList.add('failure');
+    btn.querySelector('span:last-child').textContent = 'Connection Failed';
+    if (icon) icon.textContent = 'error';
+    showSettingsError(err && err.message ? err.message : String(err));
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 async function handleSaveSettings() {
   showSettingsError('');
   showSettingsInfo('');
@@ -625,12 +669,16 @@ async function handleSend() {
   setBusy(true);
 
   // Watchdog: if the main process hangs and never responds, un-busy the UI
-  // after 45s so the user isn't stuck looking at "Working..." forever.
+  // after 45s AND call cancel-current to reset the main-process busy flag.
+  // Without the cancel-current call, llmBusy stays true and the next
+  // send-message gets rejected with "Another request is still running."
   let watchdogFired = false;
-  const watchdog = setTimeout(() => {
+  const watchdog = setTimeout(async () => {
     watchdogFired = true;
+    // Reset the main-process busy flag so the user can retry immediately.
+    try { await window.kovix.cancelCurrent(); } catch (_) {}
     setBusy(false);
-    showError('Request timed out after 45s. Click Cancel or try again. Check Settings → API key.');
+    showError('Request timed out after 45s. The provider may be slow or your network may be unstable. You can retry now.');
   }, 45_000);
 
   try {
@@ -850,6 +898,7 @@ function bindEvents() {
   });
   els.fetchModelsBtn.addEventListener('click', handleFetchModels);
   els.saveSettingsBtn.addEventListener('click', handleSaveSettings);
+  if (els.testConnectionBtn) els.testConnectionBtn.addEventListener('click', handleTestConnection);
 
   // Provider change → reset model dropdown + update baseUrl placeholder
   els.providerSel.addEventListener('change', () => {
@@ -858,6 +907,13 @@ function bindEvents() {
     els.modelSel.parentElement.classList.add('disabled');
     showSettingsError('');
     showSettingsInfo('');
+    // Reset test-connection button
+    if (els.testConnectionBtn) {
+      els.testConnectionBtn.classList.remove('success', 'failure');
+      els.testConnectionBtn.querySelector('span:last-child').textContent = 'Test Connection';
+      const icon = els.testConnectionBtn.querySelector('.material-symbols-outlined');
+      if (icon) icon.textContent = 'network_check';
+    }
     const hints = {
       openai:     'https://api.openai.com/v1',
       openrouter: 'https://openrouter.ai/api/v1',

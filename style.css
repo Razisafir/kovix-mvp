@@ -1102,6 +1102,36 @@ input, select, textarea { font-family: inherit; }
 .secondary-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .secondary-btn .material-symbols-outlined { font-size: 18px; }
 
+.test-connection-btn {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  width: 100%;
+  background: var(--surface-container-low);
+  color: var(--on-surface-variant);
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--r);
+  padding: 10px 16px;
+  font-family: var(--font-label);
+  font-size: 13px; font-weight: 500;
+  transition: background var(--t), color var(--t), border-color var(--t);
+}
+.test-connection-btn:hover {
+  background: var(--surface-container);
+  color: var(--on-surface);
+  border-color: var(--primary-container);
+}
+.test-connection-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.test-connection-btn .material-symbols-outlined { font-size: 18px; }
+.test-connection-btn.success {
+  background: var(--success-soft, #e3f4e8);
+  color: #1a7f37;
+  border-color: #bfe3c7;
+}
+.test-connection-btn.failure {
+  background: var(--error-container);
+  color: var(--on-error-container);
+  border-color: var(--error);
+}
+
 .ghost-btn {
   background: var(--surface-container-lowest);
   color: var(--on-surface-variant);

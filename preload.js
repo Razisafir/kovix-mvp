@@ -12,9 +12,10 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('kovix', {
   /* ---------------- Settings & models ---------------- */
-  getSettings:  () => ipcRenderer.invoke('get-settings'),
-  saveSettings: (cfg) => ipcRenderer.invoke('save-settings', cfg),
-  fetchModels:  (cfg) => ipcRenderer.invoke('fetch-models', cfg),
+  getSettings:    () => ipcRenderer.invoke('get-settings'),
+  saveSettings:   (cfg) => ipcRenderer.invoke('save-settings', cfg),
+  fetchModels:    (cfg) => ipcRenderer.invoke('fetch-models', cfg),
+  testConnection: (cfg) => ipcRenderer.invoke('test-connection', cfg),
 
   /* ---------------- Conversation --------------------- */
   sendMessage:    (text) => ipcRenderer.invoke('send-message', { text }),
