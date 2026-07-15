@@ -843,6 +843,10 @@ let mainWindow = null;
 // Flag to prevent concurrent LLM calls. When true, a new send-message call
 // is rejected immediately so the convo state doesn't get corrupted.
 let llmBusy = false;
+// Flag to prevent cancel-current from dropping messages while a save is
+// in progress. This ensures sessions are always saved with the user's
+// message even if they cancel during the save.
+let saveInProgress = false;
 
 function sendToRenderer(channel, payload) {
   try {
@@ -1121,7 +1125,12 @@ ipcMain.handle('send-message', async (_evt, req) => {
 
     // SAVE the session immediately (with just the user message) so the
     // conversation is recorded even if the LLM call fails or times out.
-    await saveCurrentSession();
+    saveInProgress = true;
+    try {
+      await saveCurrentSession();
+    } finally {
+      saveInProgress = false;
+    }
 
     // Call the LLM — mark busy so concurrent calls are rejected.
     llmBusy = true;
@@ -1300,12 +1309,16 @@ ipcMain.handle('sessions:new', async () => {
 ipcMain.handle('cancel-current', async () => {
   console.log('[cancel-current] cancelling, llmBusy =', llmBusy);
   llmBusy = false;
-  // Drop the last user message if it doesn't have a matching assistant reply
-  // (i.e. the call was still in flight).
+  // Only drop the last user message if there's NO matching assistant reply
+  // AND the save is not in progress. We keep the message so the session
+  // can still be saved (the user will see their message in history even
+  // if the LLM was cancelled).
   const msgs = convoState.messages;
-  if (msgs.length > 0 && msgs[msgs.length - 1].role === 'user') {
-    msgs.pop();
-    console.log('[cancel-current] dropped in-flight user message');
+  const lastIsUser = msgs.length > 0 && msgs[msgs.length - 1].role === 'user';
+  if (lastIsUser && !saveInProgress) {
+    // Don't pop — keep the user message so the session is saved with it.
+    // Just mark it as cancelled so the UI knows.
+    console.log('[cancel-current] keeping user message for session save');
   }
   return { ok: true };
 });

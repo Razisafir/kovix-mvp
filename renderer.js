@@ -668,10 +668,9 @@ async function handleSaveSettings() {
 /* -------------------------------------------------------------------------- */
 
 async function handleSend() {
-  // If busy, the Send button is now a Cancel button — clicking it cancels.
-  if (state.busy) {
-    return handleCancel();
-  }
+  // Guard: if already busy, do nothing. The Send button handler routes
+  // to handleCancel() explicitly when busy, so we should never get here.
+  if (state.busy) return;
 
   clearError();
   clearInfo();
@@ -958,13 +957,25 @@ function autoResizeInput() {
 /* -------------------------------------------------------------------------- */
 
 function bindEvents() {
-  // Chat
-  els.sendBtn.addEventListener('click', handleSend);
+  // Chat — Send button: sends if not busy, cancels if busy.
+  // This is the ONLY way to cancel (explicit button click).
+  els.sendBtn.addEventListener('click', () => {
+    if (state.busy) {
+      handleCancel();
+    } else {
+      handleSend();
+    }
+  });
   els.input.addEventListener('input', autoResizeInput);
+  // Enter key: ONLY sends when NOT busy. Pressing Enter while busy does
+  // nothing — this prevents accidental double-presses from cancelling
+  // an in-flight request.
   els.input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      handleSend();
+      if (!state.busy) {
+        handleSend();
+      }
     }
   });
 
