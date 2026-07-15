@@ -675,19 +675,45 @@ function advanceStep(current) {
 /* Session persistence                                                        */
 /* -------------------------------------------------------------------------- */
 //
-// Sessions are stored as JSON files inside the active workspace under
-// `.kovix/sessions/<id>.json`. Each file is a self-contained transcript:
+// Sessions are stored as JSON files in Electron's userData directory:
+//   C:\Users\<user>\AppData\Roaming\kovix-mvp\sessions\<workspaceHash>\<id>.json
+//
+// Each file is a self-contained transcript:
 //   {
-//     id, startedAt, updatedAt, step,
+//     id, startedAt, updatedAt, step, workspacePath,
 //     title,            // first user message (truncated)
 //     messages: [...]   // full role/content history
 //   }
 //
-// This means sessions travel with the workspace — clone it, share it, the
-// conversation history comes with it. No external database needed.
+// We store in userData (not in the workspace) because workspace folders
+// are often cloud-synced (OneDrive, Google Drive, Dropbox) or on slow
+// drives, which causes fsp.mkdir / fsp.writeFile to hang for 60+ seconds
+// and freeze the app.
 
-const SESSIONS_DIR_NAME = '.kovix';
-const SESSIONS_SUBDIR = 'sessions';
+// Sessions are stored in Electron's userData directory (NOT in the workspace)
+// to avoid OneDrive / cloud-sync / antivirus hangs on workspace file I/O.
+// Each workspace gets its own subdirectory keyed by a hash of its path, so
+// sessions are still per-workspace but live in a fast, local, never-synced
+// location: C:\Users\<user>\AppData\Roaming\kovix-mvp\sessions\<hash>\
+const crypto = require('crypto');
+
+function hashWorkspacePath(ws) {
+  // Normalize separators so Windows C:\foo and C:/foo map to the same hash.
+  const normalized = path.resolve(ws).toLowerCase();
+  return crypto.createHash('sha1').update(normalized).digest('hex').slice(0, 16);
+}
+
+function getSessionsRootDir() {
+  // app.getPath('userData') is C:\Users\<user>\AppData\Roaming\<appName>
+  // on Windows, ~/Library/Application Support/<appName> on macOS, and
+  // ~/.config/<appName> on Linux. NEVER cloud-synced.
+  try {
+    return path.join(app.getPath('userData'), 'sessions');
+  } catch (err) {
+    console.error('[sessions] could not get userData path:', err);
+    return '';
+  }
+}
 
 async function getSessionsDir() {
   const ws = await getActiveWorkspace();
@@ -695,8 +721,11 @@ async function getSessionsDir() {
     console.log('[sessions] getSessionsDir: no active workspace');
     return '';
   }
-  const dir = path.join(ws, SESSIONS_DIR_NAME, SESSIONS_SUBDIR);
-  console.log('[sessions] dir =', dir);
+  const root = getSessionsRootDir();
+  if (!root) return '';
+  // Per-workspace subdirectory keyed by path hash, so each workspace has
+  // its own session history but all sessions live in userData (fast + local).
+  const dir = path.join(root, hashWorkspacePath(ws));
   return dir;
 }
 
