@@ -64,11 +64,20 @@ const DEFAULT_BASE_URLS = {
 const STEPS = ['idea', 'refine', 'spec', 'plan', 'execute'];
 
 const SYSTEM_PROMPTS = {
-  idea: 'You are a product manager. Ask 1-2 clarifying questions to refine this idea. Do not write code yet.',
-  refine: 'Based on the conversation, output a formal markdown specification for the app. Output ONLY the spec.',
-  spec: 'Break this spec into a 1-3 step milestone plan. Output ONLY the plan.',
-  plan: 'Execute step 1 of the plan. You MUST output the code inside a markdown code block (```html or ```javascript). Do not explain, just output the code block.',
+  idea: 'You are a product manager helping the user refine their app idea. Your job is to understand what they want to build. Ask 1-2 clarifying questions each turn to understand: what the app does, who it\'s for, key features, and any technical preferences. Do NOT write code. Do NOT generate a spec. Just have a conversation to understand the idea better. If the user\'s message is vague (like "hi" or "hello"), ask them what they want to build. Only when you have a clear understanding should you suggest moving to the next step.',
+  refine: 'You are a product manager refining the user\'s idea. Ask follow-up questions about edge cases, user flows, data models, and UI/UX details. Do NOT write code. Do NOT generate a spec yet. Keep asking questions until you have enough detail to write a complete specification. If the user says "next" or "ready for spec", acknowledge and wait for the user to click the Next Step button.',
+  spec: 'Based on the conversation, output a formal markdown specification for the app. Include: Overview, Objectives, Target Audience, Functional Requirements, Non-Functional Requirements, UI Specifications, and Technical Stack. Output ONLY the spec in markdown.',
+  plan: 'Break this spec into a 1-3 step milestone plan. Each milestone should be a concrete deliverable. Output ONLY the plan in markdown.',
 };
+
+// Keywords that indicate the user wants to advance to the next step.
+const ADVANCE_KEYWORDS = ['next', 'continue', 'ready', 'done', 'go ahead', 'proceed', 'move on', 'spec', 'plan', 'execute', 'looks good', 'that works', 'yes', 'ok go', 'let\'s go'];
+
+function userWantsToAdvance(text) {
+  const lower = text.toLowerCase().trim();
+  // Exact match or starts with the keyword
+  return ADVANCE_KEYWORDS.some(kw => lower === kw || lower.startsWith(kw + ' ') || lower.startsWith('next step') || lower.startsWith('ready for'));
+}
 
 // Per-step user-facing labels (renderer also keeps its own copy).
 const STEP_LABELS = {
@@ -1234,15 +1243,32 @@ ipcMain.handle('send-message', async (_evt, req) => {
       }
     }
 
-    // Non-execute steps: advance and let the renderer show the assistant text.
-    convoState.step = nextStep;
+    // Step advancement logic:
+    // - idea & refine: CONVERSATIONAL stages — do NOT auto-advance. Only
+    //   advance if the user explicitly says "next", "continue", "ready", etc.
+    //   This lets the user have a back-and-forth conversation to refine
+    //   their idea without the app rushing them to the next step.
+    // - spec & plan: GENERATION stages — auto-advance (the LLM generates
+    //   the spec/plan, then we move to the next step automatically).
+    // - execute: terminal (handled above).
+    const isConversational = (currentStep === 'idea' || currentStep === 'refine');
+    const shouldAdvance = isConversational ? userWantsToAdvance(userText) : true;
+
+    if (shouldAdvance) {
+      convoState.step = nextStep;
+      console.log(logTag, 'advancing step:', currentStep, '->', nextStep);
+    } else {
+      console.log(logTag, 'staying in step:', currentStep, '(conversational, user did not request advance)');
+    }
+
     const saved = await saveCurrentSession();
     return {
       ok: true,
       step: currentStep,
-      nextStep,
+      nextStep: convoState.step,  // actual current step (may not have advanced)
       assistant: assistantText,
       session: saved ? { id: saved.id, title: saved.title } : null,
+      canAdvance: isConversational,  // tell the UI to show a "Next Step" button
     };
   } catch (err) {
     console.error('send-message error:', err);
@@ -1342,6 +1368,29 @@ ipcMain.handle('sessions:new', async () => {
  * The stale LLM response (when it eventually arrives) will be ignored because
  * the renderer already moved on.
  */
+/**
+ * Explicitly advance to the next step. Called when the user clicks the
+ * "Next Step →" button in the UI. This is the ONLY way to advance from
+ * the conversational stages (idea, refine) — auto-advancement is disabled
+ * for those stages so the user can have a real conversation.
+ */
+ipcMain.handle('advance-step', async () => {
+  try {
+    const current = convoState.step;
+    const next = advanceStep(current);
+    if (next === current) {
+      return { ok: false, error: 'Already at the final step.' };
+    }
+    convoState.step = next;
+    console.log('[advance-step] advanced:', current, '->', next);
+    await saveCurrentSession();
+    return { ok: true, step: current, nextStep: next };
+  } catch (err) {
+    console.error('[advance-step] error:', err);
+    return { ok: false, error: err.message };
+  }
+});
+
 ipcMain.handle('cancel-current', async () => {
   // Log who called this with a stack trace so we can find the culprit.
   const callerStack = new Error().stack;

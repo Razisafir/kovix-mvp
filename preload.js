@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('kovix', {
   resetConvo:     () => ipcRenderer.invoke('reset-convo'),
   getConvoState:  () => ipcRenderer.invoke('get-convo-state'),
   cancelCurrent:  () => ipcRenderer.invoke('cancel-current'),
+  advanceStep:    () => ipcRenderer.invoke('advance-step'),
 
   /* ---------------- Sessions ------------------------- */
   listSessions:   () => ipcRenderer.invoke('sessions:list'),

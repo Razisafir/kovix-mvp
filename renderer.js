@@ -88,6 +88,8 @@ const els = {
   sendBtn:      $('#send-btn'),
   errorBanner:  $('#error-banner'),
   infoBanner:   $('#info-banner'),
+  advanceBanner: $('#advance-banner'),
+  advanceBtn:   $('#advance-step-btn'),
 
   // File viewer
   viewerPanel:     $('#file-viewer-panel'),
@@ -180,6 +182,8 @@ function showError(msg) { banner(els.errorBanner, msg); }
 function clearError()   { els.errorBanner.classList.add('hidden'); }
 function showInfo(msg)  { banner(els.infoBanner, msg); }
 function clearInfo()    { els.infoBanner.classList.add('hidden'); }
+function showAdvanceBanner() { if (els.advanceBanner) els.advanceBanner.classList.remove('hidden'); }
+function hideAdvanceBanner() { if (els.advanceBanner) els.advanceBanner.classList.add('hidden'); }
 function showSettingsError(msg) { banner(els.settingsError, msg); }
 function showSettingsInfo(msg)  { banner(els.settingsInfo, msg); }
 
@@ -741,6 +745,13 @@ async function handleSend() {
 
     if (res.error) showError(res.error);
     if (res.info)  showInfo(res.info);
+    // Show the "Next Step" button if the backend says this is a
+    // conversational stage where the user can manually advance.
+    if (res.canAdvance) {
+      showAdvanceBanner();
+    } else {
+      hideAdvanceBanner();
+    }
     if (res.nextStep) setActiveStep(res.nextStep);
     if (res.session && res.session.id) state.currentSessionId = res.session.id;
     if (res.wroteFile && res.writtenPath) {
@@ -1055,6 +1066,26 @@ function bindEvents() {
   // File manager
   els.openFolderBtn.addEventListener('click', handleOpenFolder);
   els.viewerCloseBtn.addEventListener('click', closeViewerPanel);
+
+  // Advance-step button — explicitly advances to the next workflow step.
+  // This is the ONLY way to advance from Idea/Refine stages.
+  if (els.advanceBtn) {
+    els.advanceBtn.addEventListener('click', async () => {
+      try {
+        const res = await window.kovix.advanceStep();
+        if (res.ok) {
+          hideAdvanceBanner();
+          setActiveStep(res.nextStep);
+          showInfo(`Moved to: ${STEP_LABELS[res.nextStep] || res.nextStep}`);
+          refreshHistory();
+        } else {
+          showError(res.error || 'Could not advance.');
+        }
+      } catch (err) {
+        showError(err && err.message ? err.message : String(err));
+      }
+    });
+  }
 
   // Listen for tree-changed events
   window.kovix.onTreeChanged((_payload) => {

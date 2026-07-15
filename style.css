@@ -678,6 +678,41 @@ input, select, textarea { font-family: inherit; }
   border: 1px solid #bfe3c7;
 }
 
+/* Advance-step banner — shows a "Next Step" button when the user can
+   manually advance from a conversational stage (Idea/Refine). */
+.advance-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: var(--r);
+  background: var(--accent-soft, #e7f0ff);
+  border: 1px solid var(--primary-container);
+  font-family: var(--font-label);
+  font-size: 13px;
+  color: var(--primary);
+}
+.advance-banner.hidden { display: none !important; }
+.advance-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--primary-container);
+  color: var(--on-primary);
+  border: none;
+  border-radius: var(--r);
+  padding: 8px 16px;
+  font-family: var(--font-label);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--t);
+  white-space: nowrap;
+}
+.advance-btn:hover { background: var(--primary); }
+.advance-btn .material-symbols-outlined { font-size: 18px; }
+
 /* ============================================================= File viewer === */
 
 .file-viewer-panel {
