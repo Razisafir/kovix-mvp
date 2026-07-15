@@ -704,8 +704,10 @@ async function ensureSessionsDir() {
   const dir = await getSessionsDir();
   if (!dir) return '';
   try {
+    console.log('[sessions] mkdir start:', dir);
+    const t0 = Date.now();
     await fsp.mkdir(dir, { recursive: true });
-    console.log('[sessions] ensured dir exists:', dir);
+    console.log('[sessions] mkdir done in', Date.now() - t0, 'ms:', dir);
     return dir;
   } catch (err) {
     console.error('[sessions] Failed to create sessions dir:', dir, err);
@@ -753,8 +755,10 @@ async function saveCurrentSession() {
   };
   try {
     const filePath = path.join(dir, `${convoState.sessionId}.json`);
+    console.log('[sessions] writeFile start:', filePath);
+    const t0 = Date.now();
     await fsp.writeFile(filePath, JSON.stringify(session, null, 2), 'utf8');
-    console.log('[sessions] saved:', filePath, '(', session.messages.length, 'messages )');
+    console.log('[sessions] writeFile done in', Date.now() - t0, 'ms');
     return session;
   } catch (err) {
     console.error('[sessions] save FAILED:', err);
@@ -1125,9 +1129,12 @@ ipcMain.handle('send-message', async (_evt, req) => {
 
     // SAVE the session immediately (with just the user message) so the
     // conversation is recorded even if the LLM call fails or times out.
+    console.log(logTag, 'saving session (pre-LLM)...');
     saveInProgress = true;
     try {
+      const saveStart = Date.now();
       await saveCurrentSession();
+      console.log(logTag, 'session saved in', Date.now() - saveStart, 'ms');
     } finally {
       saveInProgress = false;
     }
