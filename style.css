@@ -199,6 +199,47 @@ input, select, textarea { font-family: inherit; }
   overflow: hidden;          /* sections scroll internally, not the whole nav */
 }
 
+/* ============================================================= Mode toggle (Chat / Agent) === */
+
+.mode-toggle {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--surface-container);
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--r-md);
+  margin-bottom: 12px;
+}
+.mode-tab {
+  flex: 1 1 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  border-radius: var(--r);
+  color: var(--on-surface-variant);
+  font-family: var(--font-label);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--t), color var(--t), box-shadow var(--t);
+}
+.mode-tab:hover { background: var(--surface-container-high); color: var(--on-surface); }
+.mode-tab.active {
+  background: var(--surface-container-lowest);
+  color: var(--primary);
+  font-weight: 600;
+  box-shadow: var(--sh-1);
+}
+.mode-tab .material-symbols-outlined { font-size: 18px; }
+
+/* Hide workflow steps in Chat mode */
+.side-nav.chat-mode #workflow-wrapper { display: none; }
+.side-nav.chat-mode .sidebar-resizer[data-resize-between="workflow-history"] { display: none; }
+
 /* Each sidebar section is a flex child that can be resized via the
    drag handle below it. The section itself is a column flex container
    so its title stays fixed and its body (history list / file tree)

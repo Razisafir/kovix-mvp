@@ -72,6 +72,10 @@ const els = {
   statusProvider: $('#status-provider'),
   statusModel:    $('#status-model'),
 
+  // Sidebar — mode toggle
+  modeTabs:   $$('.mode-tab'),
+  sideNav:    $('.side-nav'),
+
   // Sidebar — file manager
   openFolderBtn: $('#open-folder-btn'),
   fileTree:      $('#file-tree'),
@@ -121,6 +125,7 @@ const state = {
   selectedFilePath: '',
   busy: false,
   currentSessionId: null,
+  mode: 'agent',  // 'agent' or 'chat'
 };
 
 // --- Module-level watchdog ---
@@ -146,6 +151,27 @@ function stopWatchdog() {
 /* -------------------------------------------------------------------------- */
 /* Step indicator + welcome header                                            */
 /* -------------------------------------------------------------------------- */
+
+function setMode(mode) {
+  state.mode = mode;
+  // Update toggle UI
+  els.modeTabs.forEach((tab) => {
+    tab.classList.toggle('active', tab.dataset.mode === mode);
+  });
+  // Show/hide workflow section
+  if (els.sideNav) {
+    els.sideNav.classList.toggle('chat-mode', mode === 'chat');
+  }
+  // Update input placeholder
+  if (mode === 'chat') {
+    els.input.placeholder = 'Ask anything...';
+  } else {
+    els.input.placeholder = STEP_PLACEHOLDERS[state.currentStep] || 'Type your message...';
+  }
+  // Hide the advance banner in chat mode
+  if (mode === 'chat') hideAdvanceBanner();
+  console.log('[mode] switched to', mode);
+}
 
 function setActiveStep(step) {
   state.currentStep = step;
@@ -752,7 +778,10 @@ async function handleSend() {
     } else {
       hideAdvanceBanner();
     }
-    if (res.nextStep) setActiveStep(res.nextStep);
+    // Update mode if the backend reports it
+    if (res.mode && res.mode !== state.mode) setMode(res.mode);
+    // Only update step if we're in agent mode (chat mode has no steps)
+    if (res.nextStep && state.mode === 'agent') setActiveStep(res.nextStep);
     if (res.session && res.session.id) state.currentSessionId = res.session.id;
     if (res.wroteFile && res.writtenPath) {
       await refreshFileTree(res.writtenPath);
@@ -817,15 +846,21 @@ async function handleCancel() {
 
 async function handleReset() {
   try {
+    stopWatchdog();
+    watchdogFired = false;
     await window.kovix.newSession();
     state.currentSessionId = null;
     clearChatUI();
     setActiveStep('idea');
     clearError();
     clearInfo();
+    hideAdvanceBanner();
+    setBusy(false);  // ensure input is enabled
     refreshHistory();
+    els.input.focus();
   } catch (err) {
     showError(err && err.message ? err.message : String(err));
+    setBusy(false);  // even on error, don't leave the input disabled
   }
 }
 
@@ -914,10 +949,20 @@ async function refreshHistory() {
           await window.kovix.newSession();
           clearChatUI();
           setActiveStep('idea');
+          // CRITICAL: re-enable the input in case it was stuck disabled.
+          // The bug was: after deleting the active session, the input box
+          // was permanently disabled and the user couldn't type.
+          setBusy(false);
+          hideAdvanceBanner();
+          clearError();
+          clearInfo();
+          els.input.focus();
         }
         refreshHistory();
       } catch (err) {
         showError(err && err.message ? err.message : String(err));
+        // Even on error, make sure the input is usable.
+        setBusy(false);
       }
     });
 
@@ -997,6 +1042,23 @@ function bindEvents() {
   // Reset / new project
   els.resetBtn.addEventListener('click', handleReset);
   if (els.newProjectBtn) els.newProjectBtn.addEventListener('click', handleReset);
+
+  // Mode toggle (Chat / Agent)
+  els.modeTabs.forEach((tab) => {
+    tab.addEventListener('click', async () => {
+      const newMode = tab.dataset.mode;
+      if (newMode === state.mode) return;  // already on this mode
+      // Save the mode to settings so it persists
+      try {
+        const s = await window.kovix.getSettings();
+        await window.kovix.saveSettings({ ...s, mode: newMode });
+      } catch (_) { /* ignore save errors */ }
+      // Switch the UI
+      setMode(newMode);
+      // Reset the conversation when switching modes (different system prompt)
+      await handleReset();
+    });
+  });
 
   // Chat history
   if (els.newSessionBtn)     els.newSessionBtn.addEventListener('click', handleReset);
@@ -1101,10 +1163,16 @@ async function init() {
     const s = await window.kovix.getSettings();
     updateStatusCard(s);
     updateWorkspacePill(s.activeWorkspace || '');
+    // Load saved mode (default to 'agent')
+    setMode(s.mode || 'agent');
     if (s.activeWorkspace) await refreshFileTree();
     refreshHistory();
+    // Ensure input is enabled on boot (fixes the stuck-disabled bug)
+    setBusy(false);
+    els.input.focus();
   } catch (err) {
     showError(err && err.message ? err.message : String(err));
+    setBusy(false);  // don't leave input disabled on error
   }
 }
 

@@ -30,7 +30,20 @@
   <div class="app-body">
     <!-- ============== SideNavBar (240px) ============== -->
     <nav class="side-nav">
-      <!-- Workflow section -->
+      <!-- Mode toggle: Chat vs Agent -->
+      <div class="mode-toggle">
+        <button class="mode-tab active" data-mode="agent" title="Agent mode: 5-step workflow (Idea → Refine → Spec → Plan → Execute)">
+          <span class="material-symbols-outlined">smart_toy</span>
+          <span>Agent</span>
+        </button>
+        <button class="mode-tab" data-mode="chat" title="Chat mode: free conversation, no workflow">
+          <span class="material-symbols-outlined">chat</span>
+          <span>Chat</span>
+        </button>
+      </div>
+
+      <!-- Workflow section (only visible in Agent mode) -->
+      <div id="workflow-wrapper">
       <section class="sidebar-section" data-section="workflow" style="flex: 0 0 auto;">
         <div class="sidebar-section-title">
           <span class="label-sm uppercase">Workflow</span>
@@ -75,6 +88,7 @@
           </li>
         </ul>
       </section>
+      </div><!-- /workflow-wrapper -->
 
       <div class="sidebar-resizer" data-resize-between="workflow-history" draggable="false"></div>
 
@@ -132,7 +146,7 @@
         </div>
         <div class="status-row version-row">
           <span class="label-sm subtle">UI</span>
-          <span id="ui-version" class="label-sm mono">v8-noautoadv</span>
+          <span id="ui-version" class="label-sm mono">v9-chatmode</span>
         </div>
       </div>
     </nav>

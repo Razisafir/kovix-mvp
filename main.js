@@ -41,6 +41,7 @@ const DEFAULT_SETTINGS = {
   baseUrl: '',
   model: '',
   activeWorkspace: '',
+  mode: 'agent',  // 'agent' (5-step workflow) or 'chat' (free conversation)
 };
 
 const DEFAULT_BASE_URLS = {
@@ -1151,10 +1152,20 @@ ipcMain.handle('send-message', async (_evt, req) => {
       throw new Error('Empty message.');
     }
 
-    // Seed system prompt for the current step on first turn of that step.
-    const systemPrompt = SYSTEM_PROMPTS[convoState.step];
-    if (!systemPrompt) {
-      throw new Error(`Unknown step: ${convoState.step}`);
+    // Determine the mode: 'chat' (free conversation) or 'agent' (5-step workflow).
+    const mode = settings.mode || 'agent';
+
+    // Pick the system prompt based on mode.
+    let systemPrompt;
+    if (mode === 'chat') {
+      // Chat mode: simple conversational assistant, no workflow.
+      systemPrompt = 'You are Kovix, a helpful AI assistant. Answer the user\'s questions naturally and concisely. You can help with coding, writing, analysis, brainstorming, or general questions. If the user asks you to write code, you may include it in a markdown code block.';
+    } else {
+      // Agent mode: use the step-specific system prompt.
+      systemPrompt = SYSTEM_PROMPTS[convoState.step];
+      if (!systemPrompt) {
+        throw new Error(`Unknown step: ${convoState.step}`);
+      }
     }
 
     if (convoState.messages.length === 0 || convoState.messages[0].role !== 'system') {
@@ -1244,13 +1255,25 @@ ipcMain.handle('send-message', async (_evt, req) => {
     }
 
     // Step advancement logic:
-    // - idea & refine: CONVERSATIONAL stages — do NOT auto-advance. Only
-    //   advance if the user explicitly says "next", "continue", "ready", etc.
-    //   This lets the user have a back-and-forth conversation to refine
-    //   their idea without the app rushing them to the next step.
-    // - spec & plan: GENERATION stages — auto-advance (the LLM generates
-    //   the spec/plan, then we move to the next step automatically).
-    // - execute: terminal (handled above).
+    // - CHAT MODE: no steps, no advancement. Just a free conversation.
+    // - AGENT MODE:
+    //   - idea & refine: CONVERSATIONAL — do NOT auto-advance. Only advance
+    //     if the user explicitly says "next", "continue", "ready", etc.
+    //   - spec & plan: GENERATION — auto-advance after generating.
+    //   - execute: terminal (handled above).
+    if (mode === 'chat') {
+      const saved = await saveCurrentSession();
+      return {
+        ok: true,
+        step: 'chat',
+        nextStep: 'chat',
+        mode: 'chat',
+        assistant: assistantText,
+        session: saved ? { id: saved.id, title: saved.title } : null,
+        canAdvance: false,
+      };
+    }
+
     const isConversational = (currentStep === 'idea' || currentStep === 'refine');
     const shouldAdvance = isConversational ? userWantsToAdvance(userText) : true;
 
@@ -1265,10 +1288,11 @@ ipcMain.handle('send-message', async (_evt, req) => {
     return {
       ok: true,
       step: currentStep,
-      nextStep: convoState.step,  // actual current step (may not have advanced)
+      nextStep: convoState.step,
+      mode: 'agent',
       assistant: assistantText,
       session: saved ? { id: saved.id, title: saved.title } : null,
-      canAdvance: isConversational,  // tell the UI to show a "Next Step" button
+      canAdvance: isConversational,
     };
   } catch (err) {
     console.error('send-message error:', err);
