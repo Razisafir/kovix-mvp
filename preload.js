@@ -58,4 +58,26 @@ contextBridge.exposeInMainWorld('kovix', {
     ipcRenderer.on('llm:delta', listener);
     return () => ipcRenderer.removeListener('llm:delta', listener);
   },
+
+  /**
+   * Subscribe to tool:call events (agent is executing a tool).
+   * @param {(payload:{name:string, args:object, iteration:number}) => void} cb
+   * @returns {() => void} unsubscribe fn
+   */
+  onToolCall: (cb) => {
+    const listener = (_evt, payload) => cb(payload);
+    ipcRenderer.on('tool:call', listener);
+    return () => ipcRenderer.removeListener('tool:call', listener);
+  },
+
+  /**
+   * Subscribe to tool:result events (tool execution completed).
+   * @param {(payload:{name:string, ok:boolean, result:string, iteration:number}) => void} cb
+   * @returns {() => void} unsubscribe fn
+   */
+  onToolResult: (cb) => {
+    const listener = (_evt, payload) => cb(payload);
+    ipcRenderer.on('tool:result', listener);
+    return () => ipcRenderer.removeListener('tool:result', listener);
+  },
 });

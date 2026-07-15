@@ -28,6 +28,11 @@ const fsp = require('fs').promises;
 // openai SDK is used for OpenAI, OpenRouter, and Ollama (all expose an OpenAI-compatible /v1/chat/completions endpoint).
 const OpenAI = require('openai').default || require('openai');
 
+// Agent tools system — gives the lead agent the ability to read/write files,
+// search the web, run commands, etc. Turns Kovix from a chatbot into a real
+// autonomous agent like Cursor or Antigravity.
+const { executeTool, buildAgentSystemPrompt, parseToolCalls } = require('./tools');
+
 /* -------------------------------------------------------------------------- */
 /* Constants                                                                  */
 /* -------------------------------------------------------------------------- */
@@ -1158,8 +1163,9 @@ ipcMain.handle('send-message', async (_evt, req) => {
     // Pick the system prompt based on mode.
     let systemPrompt;
     if (mode === 'chat') {
-      // Chat mode: simple conversational assistant, no workflow.
-      systemPrompt = 'You are Kovix, a helpful AI assistant. Answer the user\'s questions naturally and concisely. You can help with coding, writing, analysis, brainstorming, or general questions. If the user asks you to write code, you may include it in a markdown code block.';
+      // Chat mode: AUTONOMOUS AGENT with tools — like Cursor/JARVIS.
+      // The agent can read files, write files, search the web, run commands, etc.
+      systemPrompt = buildAgentSystemPrompt(workspace);
     } else {
       // Agent mode: use the step-specific system prompt.
       systemPrompt = SYSTEM_PROMPTS[convoState.step];
@@ -1200,6 +1206,65 @@ ipcMain.handle('send-message', async (_evt, req) => {
     let assistantText;
     try {
       assistantText = await callLLM(settings, convoState.messages);
+
+      // TOOL-CALLING LOOP (chat mode only)
+      // If the LLM responded with tool calls, execute them, feed the results
+      // back, and call the LLM again. Loop until the LLM gives a final text
+      // response (no tool calls). Max 10 iterations to prevent infinite loops.
+      if (mode === 'chat') {
+        let toolIterations = 0;
+        const MAX_TOOL_ITERATIONS = 10;
+        let toolCallsFound = parseToolCalls(assistantText);
+        while (toolCallsFound && toolIterations < MAX_TOOL_ITERATIONS) {
+          toolIterations++;
+          console.log(logTag, `tool iteration ${toolIterations}: ${toolCallsFound.length} tool call(s)`);
+
+          // Notify the renderer that tool calls are being executed
+          for (const tc of toolCallsFound) {
+            sendToRenderer('tool:call', {
+              name: tc.name,
+              args: tc.args,
+              iteration: toolIterations,
+            });
+          }
+
+          // Execute each tool call and collect results
+          const toolResults = [];
+          for (const tc of toolCallsFound) {
+            const toolResult = await executeTool(tc.name, tc.args, workspace);
+            const resultText = toolResult.ok ? toolResult.result : `ERROR: ${toolResult.error}`;
+            toolResults.push(`[Tool: ${tc.name}] Result:\n${resultText}`);
+
+            // Notify the renderer of the tool result
+            sendToRenderer('tool:result', {
+              name: tc.name,
+              ok: toolResult.ok,
+              result: toolResult.ok ? toolResult.result : toolResult.error,
+              iteration: toolIterations,
+            });
+          }
+
+          // Add the assistant's tool call + tool results to the conversation
+          convoState.messages.push({ role: 'assistant', content: assistantText });
+          convoState.messages.push({
+            role: 'user',
+            content: `Tool results:\n\n${toolResults.join('\n\n')}\n\nContinue. If you have enough information, respond to me directly (no tool call). If you need another tool, use the same <tool_call> format.`,
+          });
+
+          // Stream the intermediate tool activity to the renderer
+          sendToRenderer('llm:delta', { delta: '' }); // placeholder to keep UI alive
+
+          // Call the LLM again with the tool results
+          console.log(logTag, `calling LLM again (iteration ${toolIterations + 1})...`);
+          assistantText = await callLLM(settings, convoState.messages);
+          toolCallsFound = parseToolCalls(assistantText);
+        }
+        if (toolIterations >= MAX_TOOL_ITERATIONS) {
+          console.warn(logTag, 'max tool iterations reached, stopping');
+          assistantText = (assistantText || '') + '\n\n[Note: Reached maximum tool call iterations (10). Stopping to prevent infinite loop.]';
+        }
+        console.log(logTag, `tool loop complete after ${toolIterations} iteration(s)`);
+      }
     } finally {
       llmBusy = false;
     }

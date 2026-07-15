@@ -223,6 +223,38 @@ function banner(el, msg) {
 /* Chat rendering                                                             */
 /* -------------------------------------------------------------------------- */
 
+function appendToolCall(name, args) {
+  const row = document.createElement('div');
+  row.className = 'msg tool-call';
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble tool-bubble';
+  const argsStr = Object.entries(args || {}).map(([k, v]) => `${k}: ${typeof v === 'string' ? `"${v.slice(0, 60)}${v.length > 60 ? '...' : ''}"` : JSON.stringify(v)}`).join(', ');
+  bubble.innerHTML =
+    `<span class="material-symbols-outlined tool-icon">build</span>` +
+    `<span class="tool-label">Using tool: <strong>${escapeHtml(name)}</strong>(${escapeHtml(argsStr)})</span>`;
+  row.appendChild(bubble);
+  els.messages.appendChild(row);
+  scrollMessagesToBottom();
+  return row;
+}
+
+function appendToolResult(name, ok, result) {
+  const row = document.createElement('div');
+  row.className = 'msg tool-result';
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble tool-result-bubble ' + (ok ? 'ok' : 'error');
+  const icon = ok ? 'check_circle' : 'error';
+  const label = ok ? `Tool result (${name})` : `Tool error (${name})`;
+  const truncated = (result || '').slice(0, 500) + ((result || '').length > 500 ? '...' : '');
+  bubble.innerHTML =
+    `<span class="material-symbols-outlined tool-icon">${icon}</span>` +
+    `<span class="tool-label">${escapeHtml(label)}</span>` +
+    `<pre class="tool-output">${escapeHtml(truncated)}</pre>`;
+  row.appendChild(bubble);
+  els.messages.appendChild(row);
+  scrollMessagesToBottom();
+}
+
 function escapeHtml(s) {
   return String(s)
     .replace(/&/g, '&amp;')
@@ -1152,6 +1184,22 @@ function bindEvents() {
   // Listen for tree-changed events
   window.kovix.onTreeChanged((_payload) => {
     refreshFileTree().catch((err) => console.error('tree refresh failed:', err));
+  });
+
+  // Listen for tool call/result events from the lead agent
+  window.kovix.onToolCall((payload) => {
+    if (payload && payload.name) {
+      appendToolCall(payload.name, payload.args);
+    }
+  });
+  window.kovix.onToolResult((payload) => {
+    if (payload && payload.name) {
+      appendToolResult(payload.name, payload.ok, payload.result);
+      // If the tool wrote a file, refresh the tree
+      if (payload.name === 'write_file') {
+        refreshFileTree().catch(() => {});
+      }
+    }
   });
 }
 
