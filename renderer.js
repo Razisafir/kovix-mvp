@@ -770,7 +770,9 @@ async function handleSend() {
 function startWatchdog(sendCtx) {
   clearWatchdog();
   const WATCHDOG_MS = 60_000;
+  console.log('[watchdog] starting 60s timer');
   watchdogTimer = setTimeout(async () => {
+    console.log('[watchdog] FIRED after 60s — calling cancelCurrent');
     watchdogFired = true;
     if (watchdogUnsubscribeDelta) {
       watchdogUnsubscribeDelta();
@@ -787,6 +789,8 @@ function startWatchdog(sendCtx) {
 }
 
 async function handleCancel() {
+  console.log('[handleCancel] called, state.busy =', state.busy);
+  console.log('[handleCancel] STACK:', new Error().stack);
   stopWatchdog();
   watchdogFired = true;  // prevent any pending watchdog from firing
   try {

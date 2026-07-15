@@ -1307,7 +1307,10 @@ ipcMain.handle('sessions:new', async () => {
  * the renderer already moved on.
  */
 ipcMain.handle('cancel-current', async () => {
+  // Log who called this with a stack trace so we can find the culprit.
+  const callerStack = new Error().stack;
   console.log('[cancel-current] cancelling, llmBusy =', llmBusy);
+  console.log('[cancel-current] CALLER STACK:', callerStack);
   llmBusy = false;
   // Only drop the last user message if there's NO matching assistant reply
   // AND the save is not in progress. We keep the message so the session
