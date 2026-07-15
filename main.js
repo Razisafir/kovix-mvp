@@ -796,6 +796,7 @@ async function saveCurrentSession() {
     step: convoState.step,
     title: sessionTitleFromMessages(convoState.messages),
     messages: convoState.messages.slice(),
+    workspacePath: await getActiveWorkspace(),  // so we can show which workspace
   };
   try {
     const filePath = path.join(dir, `${convoState.sessionId}.json`);
@@ -811,36 +812,49 @@ async function saveCurrentSession() {
 }
 
 async function listSessions() {
-  const dir = await getSessionsDir();
-  if (!dir) return [];
+  // List sessions from ALL workspaces, not just the current one.
+  // Each session includes its workspacePath so the UI can show which
+  // workspace it belongs to.
+  const root = getSessionsRootDir();
+  if (!root || !fs.existsSync(root)) {
+    console.log('[sessions] list: no sessions root dir yet:', root);
+    return [];
+  }
   try {
-    if (!fs.existsSync(dir)) {
-      console.log('[sessions] list: dir does not exist yet:', dir);
-      return [];
-    }
-    const entries = await fsp.readdir(dir);
-    const files = entries.filter((f) => f.endsWith('.json'));
-    console.log('[sessions] list: found', files.length, 'session files in', dir);
-    const sessions = [];
-    for (const f of files) {
+    const allSessions = [];
+    // Each subdirectory is a workspace hash
+    const workspaceDirs = await fsp.readdir(root, { withFileTypes: true });
+    for (const wsDir of workspaceDirs) {
+      if (!wsDir.isDirectory()) continue;
+      const wsDirPath = path.join(root, wsDir.name);
+      let files;
       try {
-        const raw = await fsp.readFile(path.join(dir, f), 'utf8');
-        const s = JSON.parse(raw);
-        if (s && s.id && Array.isArray(s.messages)) {
-          sessions.push({
-            id: s.id,
-            startedAt: s.startedAt || '',
-            updatedAt: s.updatedAt || '',
-            step: s.step || 'idea',
-            title: s.title || sessionTitleFromMessages(s.messages) || 'Untitled session',
-            messageCount: s.messages.filter((m) => m.role !== 'system').length,
-          });
-        }
-      } catch (_) { /* skip corrupt files */ }
+        files = await fsp.readdir(wsDirPath);
+      } catch (_) { continue; }
+      const jsonFiles = files.filter((f) => f.endsWith('.json'));
+      for (const f of jsonFiles) {
+        try {
+          const raw = await fsp.readFile(path.join(wsDirPath, f), 'utf8');
+          const s = JSON.parse(raw);
+          if (s && s.id && Array.isArray(s.messages)) {
+            allSessions.push({
+              id: s.id,
+              startedAt: s.startedAt || '',
+              updatedAt: s.updatedAt || '',
+              step: s.step || 'idea',
+              title: s.title || sessionTitleFromMessages(s.messages) || 'Untitled session',
+              messageCount: s.messages.filter((m) => m.role !== 'system').length,
+              workspacePath: s.workspacePath || '',
+              workspaceHash: wsDir.name,
+            });
+          }
+        } catch (_) { /* skip corrupt files */ }
+      }
     }
+    console.log('[sessions] list: found', allSessions.length, 'sessions across all workspaces');
     // Newest first
-    sessions.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
-    return sessions;
+    allSessions.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+    return allSessions;
   } catch (err) {
     console.error('listSessions error:', err);
     return [];
@@ -848,19 +862,32 @@ async function listSessions() {
 }
 
 async function loadSession(id) {
-  const dir = await getSessionsDir();
-  if (!dir) return null;
-  const file = path.join(dir, `${id}.json`);
-  if (!fs.existsSync(file)) return null;
+  // Search ALL workspace directories for the session, not just the current one.
+  // This lets users load sessions from any workspace.
+  const root = getSessionsRootDir();
+  if (!root || !fs.existsSync(root)) return null;
   try {
-    const raw = await fsp.readFile(file, 'utf8');
-    const s = JSON.parse(raw);
-    if (!s || !s.id || !Array.isArray(s.messages)) return null;
-    convoState.sessionId = s.id;
-    convoState.startedAt = s.startedAt || new Date().toISOString();
-    convoState.step = s.step || 'idea';
-    convoState.messages = s.messages.slice();
-    return s;
+    const workspaceDirs = await fsp.readdir(root, { withFileTypes: true });
+    for (const wsDir of workspaceDirs) {
+      if (!wsDir.isDirectory()) continue;
+      const file = path.join(root, wsDir.name, `${id}.json`);
+      if (fs.existsSync(file)) {
+        const raw = await fsp.readFile(file, 'utf8');
+        const s = JSON.parse(raw);
+        if (!s || !s.id || !Array.isArray(s.messages)) return null;
+        convoState.sessionId = s.id;
+        convoState.startedAt = s.startedAt || new Date().toISOString();
+        convoState.step = s.step || 'idea';
+        convoState.messages = s.messages.slice();
+        // Switch to the session's workspace if different from current
+        if (s.workspacePath && s.workspacePath !== (await getActiveWorkspace())) {
+          await setActiveWorkspace(s.workspacePath);
+          notifyTreeChanged(null);
+        }
+        return s;
+      }
+    }
+    return null;  // session not found in any workspace
   } catch (err) {
     console.error('loadSession error:', err);
     return null;
@@ -868,14 +895,22 @@ async function loadSession(id) {
 }
 
 async function deleteSession(id) {
-  const dir = await getSessionsDir();
-  if (!dir) return false;
-  const file = path.join(dir, `${id}.json`);
+  // Search ALL workspace directories for the session to delete.
+  const root = getSessionsRootDir();
+  if (!root) return false;
   try {
-    if (fs.existsSync(file)) await fsp.unlink(file);
-    // If we just deleted the active session, reset convo state too.
-    if (convoState.sessionId === id) resetConvo();
-    return true;
+    const workspaceDirs = await fsp.readdir(root, { withFileTypes: true });
+    for (const wsDir of workspaceDirs) {
+      if (!wsDir.isDirectory()) continue;
+      const file = path.join(root, wsDir.name, `${id}.json`);
+      if (fs.existsSync(file)) {
+        await fsp.unlink(file);
+        // If we just deleted the active session, reset convo state too.
+        if (convoState.sessionId === id) resetConvo();
+        return true;
+      }
+    }
+    return false;  // session not found
   } catch (err) {
     console.error('deleteSession error:', err);
     return false;

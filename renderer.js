@@ -226,31 +226,71 @@ function banner(el, msg) {
 function appendToolCall(name, args) {
   const row = document.createElement('div');
   row.className = 'msg tool-call';
-  const bubble = document.createElement('div');
-  bubble.className = 'bubble tool-bubble';
-  const argsStr = Object.entries(args || {}).map(([k, v]) => `${k}: ${typeof v === 'string' ? `"${v.slice(0, 60)}${v.length > 60 ? '...' : ''}"` : JSON.stringify(v)}`).join(', ');
-  bubble.innerHTML =
-    `<span class="material-symbols-outlined tool-icon">build</span>` +
-    `<span class="tool-label">Using tool: <strong>${escapeHtml(name)}</strong>(${escapeHtml(argsStr)})</span>`;
-  row.appendChild(bubble);
+  const card = document.createElement('div');
+  card.className = 'tool-card running';
+
+  // Header (always visible, clickable to expand)
+  const header = document.createElement('div');
+  header.className = 'tool-card-header';
+  const argsStr = Object.entries(args || {}).map(([k, v]) => {
+    const val = typeof v === 'string' ? `"${v.slice(0, 80)}${v.length > 80 ? '...' : ''}"` : JSON.stringify(v);
+    return `${k}: ${val}`;
+  }).join(', ');
+  header.innerHTML =
+    `<span class="material-symbols-outlined tool-card-icon running-icon">progress_activity</span>` +
+    `<span class="tool-card-label">Running: <strong>${escapeHtml(name)}</strong></span>` +
+    `<span class="tool-card-args">${escapeHtml(argsStr)}</span>` +
+    `<span class="material-symbols-outlined tool-card-chevron">expand_more</span>`;
+  card.appendChild(header);
+
+  // Details (hidden by default, expandable)
+  const details = document.createElement('div');
+  details.className = 'tool-card-details collapsed';
+  details.innerHTML = `<pre class="tool-output">${escapeHtml(JSON.stringify(args, null, 2))}</pre>`;
+  card.appendChild(details);
+
+  // Toggle expand/collapse on header click
+  header.addEventListener('click', () => {
+    details.classList.toggle('collapsed');
+    const chev = header.querySelector('.tool-card-chevron');
+    if (chev) chev.textContent = details.classList.contains('collapsed') ? 'expand_more' : 'expand_less';
+  });
+
+  row.appendChild(card);
   els.messages.appendChild(row);
   scrollMessagesToBottom();
-  return row;
+  return { row, card };
 }
 
 function appendToolResult(name, ok, result) {
   const row = document.createElement('div');
   row.className = 'msg tool-result';
-  const bubble = document.createElement('div');
-  bubble.className = 'bubble tool-result-bubble ' + (ok ? 'ok' : 'error');
+  const card = document.createElement('div');
+  card.className = 'tool-card ' + (ok ? 'done' : 'failed');
+
+  const header = document.createElement('div');
+  header.className = 'tool-card-header';
   const icon = ok ? 'check_circle' : 'error';
-  const label = ok ? `Tool result (${name})` : `Tool error (${name})`;
-  const truncated = (result || '').slice(0, 500) + ((result || '').length > 500 ? '...' : '');
-  bubble.innerHTML =
-    `<span class="material-symbols-outlined tool-icon">${icon}</span>` +
-    `<span class="tool-label">${escapeHtml(label)}</span>` +
-    `<pre class="tool-output">${escapeHtml(truncated)}</pre>`;
-  row.appendChild(bubble);
+  const label = ok ? `Completed: ${name}` : `Failed: ${name}`;
+  header.innerHTML =
+    `<span class="material-symbols-outlined tool-card-icon ${ok ? 'ok-icon' : 'error-icon'}">${icon}</span>` +
+    `<span class="tool-card-label">${escapeHtml(label)}</span>` +
+    `<span class="tool-card-args">${escapeHtml((result || '').slice(0, 100))}${(result || '').length > 100 ? '...' : ''}</span>` +
+    `<span class="material-symbols-outlined tool-card-chevron">expand_more</span>`;
+  card.appendChild(header);
+
+  const details = document.createElement('div');
+  details.className = 'tool-card-details collapsed';
+  details.innerHTML = `<pre class="tool-output">${escapeHtml(result || '')}</pre>`;
+  card.appendChild(details);
+
+  header.addEventListener('click', () => {
+    details.classList.toggle('collapsed');
+    const chev = header.querySelector('.tool-card-chevron');
+    if (chev) chev.textContent = details.classList.contains('collapsed') ? 'expand_more' : 'expand_less';
+  });
+
+  row.appendChild(card);
   els.messages.appendChild(row);
   scrollMessagesToBottom();
 }
@@ -962,6 +1002,7 @@ async function refreshHistory() {
       '<div class="history-text">' +
         `<div class="history-title">${escapeHtml(s.title || 'Untitled session')}</div>` +
         `<div class="history-meta">${escapeHtml(formatSessionDate(s.updatedAt || s.startedAt))} · ${s.messageCount || 0} msgs · ${escapeHtml(s.step || 'idea')}</div>` +
+        (s.workspacePath ? `<div class="history-workspace" title="${escapeHtml(s.workspacePath)}">📁 ${escapeHtml(s.workspacePath.split(/[\\/]/).pop() || s.workspacePath)}</div>` : '') +
       '</div>' +
       '<button class="history-delete" title="Delete chat" aria-label="Delete chat"><span class="material-symbols-outlined">delete</span></button>';
 

@@ -465,48 +465,153 @@ You have access to the following tools:
 
 ${toolList}
 
-## How to use tools
+## CRITICAL: How to call tools
 
-To call a tool, respond with EXACTLY this format (and nothing else):
+To call a tool, you MUST output EXACTLY this format on its own line:
 
-<tool_call>
-{"name": "tool_name", "args": {"param": "value"}}
-</tool_call>
+<tool_call>{"name": "tool_name", "args": {"param": "value"}}</tool_call>
 
-After you call a tool, you'll receive the result and can decide to:
-1. Call another tool (same format)
-2. Respond to the user with normal text
+### Examples:
 
-## Rules
-- Always use tools to DO things (read files, write files, search) rather than asking the user to do them.
-- If the user asks you to create a file, use write_file.
-- If the user asks about existing files, use read_file or list_directory first.
-- If you need current information (docs, APIs), use web_search.
-- When you're done using tools, give a clear, concise summary of what you did.
-- The workspace is: ${workspace || '(no workspace open)'}
-- You are the LEAD AGENT. You can spawn sub-agents with create_subagent for parallel tasks.
+To read a file:
+<tool_call>{"name": "read_file", "args": {"path": "package.json"}}</tool_call>
+
+To write a file:
+<tool_call>{"name": "write_file", "args": {"path": "hello.js", "content": "console.log('hi');"}}</tool_call>
+
+To list a directory:
+<tool_call>{"name": "list_directory", "args": {"path": "."}}</tool_call>
+
+To search files:
+<tool_call>{"name": "search_files", "args": {"query": "electron"}}</tool_call>
+
+To search the web:
+<tool_call>{"name": "web_search", "args": {"query": "latest Node.js version"}}</tool_call>
+
+To run a command:
+<tool_call>{"name": "run_command", "args": {"command": "npm list"}}</tool_call>
+
+To save a memory:
+<tool_call>{"name": "save_memory", "args": {"content": "User prefers TypeScript", "tags": ["preferences"]}}</tool_call>
+
+## IMPORTANT RULES
+
+1. **Output ONLY the tool call** — do NOT wrap it in <think> tags, do NOT add explanation before it, do NOT close with </think>.
+2. **Always close with </tool_call>** — never leave it open.
+3. **One tool call per response** — wait for the result before calling the next tool.
+4. **After receiving a tool result**, you can either:
+   - Call another tool (same format)
+   - Respond to the user with normal text (no tool call)
+5. **NEVER fabricate results** — if you haven't called a tool, you don't have the result. Call the tool first, then report what it returned.
+6. **NEVER use <think> tags** — they break the tool parser. Just output the tool call directly.
+
+## Workflow
+1. User asks a question
+2. You decide which tool to use
+3. You output the <tool_call> block
+4. The system executes the tool and returns the result
+5. You read the result and decide: call another tool, or respond to the user
+6. When responding to the user, write normal text (no tool_call tags)
+
+## Workspace
+The active workspace is: ${workspace || '(no workspace open)'}
 
 Remember: you are autonomous. Don't ask the user to do things you can do yourself with tools.`;
 }
 
 /**
  * Extract tool calls from an LLM response.
+ *
+ * LLMs are unpredictable — they might output:
+ *   <tool_call>{"name":"read_file","args":{"path":"foo.js"}}</tool_call>
+ *   <tool_call>read_file{"path":"foo.js"}</tool_call>
+ *   <tool_call>read_file{"path":"foo.js"}</think>
+ *   <tool_call>read_file
+ *   {"path":"foo.js"}</tool_call>
+ *
+ * This parser handles ALL of these by being very lenient. It:
+ * 1. Finds all <tool_call> blocks (with or without closing tag)
+ * 2. Extracts the content
+ * 3. Tries to parse it as JSON, or as "name + JSON"
+ *
  * Returns array of { name, args } or null if no tool call found.
  */
 function parseToolCalls(text) {
   if (!text || typeof text !== 'string') return null;
   const calls = [];
-  const regex = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/g;
+
+  // Strategy 1: Proper <tool_call>...</tool_call> blocks
+  const properRegex = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/g;
   let match;
-  while ((match = regex.exec(text)) !== null) {
-    try {
-      const parsed = JSON.parse(match[1].trim());
-      if (parsed.name) {
-        calls.push({ name: parsed.name, args: parsed.args || {} });
-      }
-    } catch (_) { /* skip malformed */ }
+  while ((match = properRegex.exec(text)) !== null) {
+    const parsed = parseToolCallContent(match[1]);
+    if (parsed) calls.push(parsed);
   }
+
+  // Strategy 2: <tool_call> without closing tag (LLM forgot to close it)
+  // Closes at the next <tool_call>, </think>, or end of string
+  if (calls.length === 0) {
+    const openRegex = /<tool_call>\s*([\s\S]*?)(?=<tool_call>|<\/think>|<\/tool_call>|$)/g;
+    while ((match = openRegex.exec(text)) !== null) {
+      const parsed = parseToolCallContent(match[1]);
+      if (parsed) calls.push(parsed);
+    }
+  }
+
+  // Strategy 3: Look for JSON-like tool call patterns without tags
+  // e.g. {"name":"read_file","args":{"path":"foo.js"}}
+  if (calls.length === 0) {
+    const jsonRegex = /\{\s*"name"\s*:\s*"(\w+)"\s*,\s*"args"\s*:\s*(\{[^}]*\})\s*\}/g;
+    while ((match = jsonRegex.exec(text)) !== null) {
+      try {
+        const args = JSON.parse(match[2]);
+        calls.push({ name: match[1], args });
+      } catch (_) { /* skip */ }
+    }
+  }
+
   return calls.length > 0 ? calls : null;
+}
+
+/**
+ * Parse the content of a <tool_call> block.
+ * Handles:
+ *   {"name":"read_file","args":{"path":"foo.js"}}
+ *   read_file{"path":"foo.js"}
+ *   read_file {"path":"foo.js"}
+ *   read_file
+ *   {"path":"foo.js"}
+ */
+function parseToolCallContent(content) {
+  if (!content) return null;
+  const trimmed = content.trim();
+  if (!trimmed) return null;
+
+  // Try parsing as pure JSON first: {"name":"...","args":{...}}
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (parsed.name) {
+      return { name: parsed.name, args: parsed.args || {} };
+    }
+  } catch (_) { /* not pure JSON, continue */ }
+
+  // Try "name + JSON" format: read_file{"path":"foo.js"}
+  // Match: word characters at the start, then a JSON object
+  const nameJsonMatch = trimmed.match(/^(\w+)\s*(\{[\s\S]*\})\s*$/);
+  if (nameJsonMatch) {
+    const name = nameJsonMatch[1];
+    try {
+      const args = JSON.parse(nameJsonMatch[2]);
+      return { name, args };
+    } catch (_) { /* malformed JSON, continue */ }
+  }
+
+  // Try "name" only (no args) — for tools with no required params
+  if (/^\w+$/.test(trimmed)) {
+    return { name: trimmed, args: {} };
+  }
+
+  return null;
 }
 
 module.exports = {
