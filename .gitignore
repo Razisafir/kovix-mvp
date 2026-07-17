@@ -3,6 +3,14 @@ node_modules/
 dist/
 out/
 
+# Electron builder cache
+*.app/
+*.dmg
+*.exe
+*.AppImage
+*.deb
+electron-builder*.yml
+
 # Kovix local artifacts (not for git)
 workspace/
 reference_paul/
@@ -20,3 +28,7 @@ settings.json
 
 # Generated output
 output.txt
+
+# OS files
+.DS_Store
+Thumbs.db
