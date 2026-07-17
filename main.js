@@ -39,6 +39,14 @@ const { executeTool, buildAgentSystemPrompt, parseToolCalls } = require('./tools
 // each change before it touches disk. See staging.js for the full contract.
 const { staging, STAGING_CHANNELS } = require('./staging');
 
+// Multi-file code block extraction (Task Zeta — "App Builder" upgrade).
+// Extracted into a standalone module so the parsing logic is unit-testable
+// without launching Electron. main.js re-exports the functions for internal use.
+const codeBlocks = require('./code-blocks');
+const extractCodeBlocks = codeBlocks.extractCodeBlocks;
+const extractFilenameFromComment = codeBlocks.extractFilenameFromComment;
+const extractFilenameFromPrecedingLine = codeBlocks.extractFilenameFromPrecedingLine;
+
 /* -------------------------------------------------------------------------- */
 /* Constants                                                                  */
 /* -------------------------------------------------------------------------- */
@@ -80,6 +88,7 @@ const SYSTEM_PROMPTS = {
   refine: 'You are a product manager refining the user\'s idea. Ask follow-up questions about edge cases, user flows, data models, and UI/UX details. Do NOT write code. Do NOT generate a spec yet. Keep asking questions until you have enough detail to write a complete specification. If the user says "next" or "ready for spec", acknowledge and wait for the user to click the Next Step button.',
   spec: 'Based on the conversation, output a formal markdown specification for the app. Include: Overview, Objectives, Target Audience, Functional Requirements, Non-Functional Requirements, UI Specifications, and Technical Stack. Output ONLY the spec in markdown.',
   plan: 'Break this spec into a 1-3 step milestone plan. Each milestone should be a concrete deliverable. Output ONLY the plan in markdown.',
+  execute: 'You are an autonomous software engineer. Output the COMPLETE code for the project. You may output MULTIPLE files in one response — use a separate fenced code block for each file. Tag each code block with the filename using the syntax ```lang:filepath (e.g. ```html:index.html, ```jsx:src/App.jsx, ```css:src/styles.css). If the user previously rejected a file, address their feedback directly and do NOT repeat the rejected approach. Output ONLY the code blocks with a one-line description before each — no long explanations.',
 };
 
 // Keywords that indicate the user wants to advance to the next step.
@@ -487,74 +496,6 @@ async function callLLM(settings, messages) {
 
     default:
       throw new Error(`Unknown provider: ${provider}`);
-  }
-}
-
-/* -------------------------------------------------------------------------- */
-/* Code-block extraction                                                      */
-/* -------------------------------------------------------------------------- */
-
-/**
- * Extract the contents of the FIRST fenced code block from a markdown string.
- * Accepts ```lang ... ``` or ~~~lang ... ~~~. Returns null if none found.
- */
-function extractCodeBlock(text) {
-  if (typeof text !== 'string' || !text) return null;
-  const re = /```[ \t]*([\w+-]*)[ \t]*\r?\n([\s\S]*?)```|~~~[ \t]*([\w+-]*)[ \t]*\r?\n([\s\S]*?)~~~/;
-  const m = text.match(re);
-  if (m) {
-    return (m[2] != null ? m[2] : m[4] || '').replace(/\s+$/, '');
-  }
-  return null;
-}
-
-/**
- * Extract the language tag of the first code block, e.g. "html" or "javascript".
- * Used to choose a sensible filename when writing to the workspace.
- */
-function extractCodeBlockLang(text) {
-  if (typeof text !== 'string' || !text) return '';
-  const re = /```[ \t]*([\w+-]*)[ \t]*\r?\n[\s\S]*?```|~~~[ \t]*([\w+-]*)[ \t]*\r?\n[\s\S]*?~~~/;
-  const m = text.match(re);
-  if (!m) return '';
-  return (m[1] || m[2] || '').toLowerCase();
-}
-
-/**
- * Pick a filename for the extracted code based on its language tag.
- * Defaults to output.txt for unknown languages.
- */
-function pickOutputFilename(lang) {
-  switch ((lang || '').toLowerCase()) {
-    case 'html':
-    case 'htm':
-      return 'index.html';
-    case 'javascript':
-    case 'js':
-    case 'jsx':
-    case 'mjs':
-    case 'cjs':
-      return 'script.js';
-    case 'typescript':
-    case 'ts':
-    case 'tsx':
-      return 'script.ts';
-    case 'css':
-      return 'style.css';
-    case 'json':
-      return 'data.json';
-    case 'python':
-    case 'py':
-      return 'script.py';
-    case 'markdown':
-    case 'md':
-      return 'output.md';
-    case 'bash':
-    case 'sh':
-    case 'shell':
-      return 'script.sh';
-    default:
-      return 'output.txt';
   }
 }
 
@@ -1330,180 +1271,209 @@ ipcMain.handle('send-message', async (_evt, req) => {
     const currentStep = convoState.step;
     const nextStep = advanceStep(currentStep);
 
-    // Execute step: parse code block and route it through the APPROVE GATE.
-    // The agent no longer writes directly to disk. The proposed write is
-    // staged, the user sees a Monaco diff, and must explicitly accept,
-    // reject (with reason), or modify before the file is touched.
+    // Execute step: parse ALL code blocks and route each through the APPROVE GATE.
     //
-    // On REJECT: the user's reason is appended to the LLM context and the
-    // LLM is re-called with a prompt asking it to revise. This loops up to
-    // STAGING_MAX_RETRIES times before giving up and surfacing the error.
+    // MULTI-FILE SUPPORT (Task Zeta — "App Builder" upgrade):
+    //   The LLM can output multiple files in one response (e.g. index.html +
+    //   App.jsx + styles.css for a React app). We parse all of them with
+    //   extractCodeBlocks() and propose each one sequentially. The staging
+    //   queue handles the "File X of Y" counter in the UI.
+    //
+    // PER-FILE REJECT FEEDBACK:
+    //   If the user rejects a specific file, the rejection reason is appended
+    //   to the LLM context and the LLM is re-called asking it to revise JUST
+    //   that file. Max STAGING_MAX_RETRIES per file. After max retries on a
+    //   single file, we stop the batch and surface the error.
     if (currentStep === 'execute') {
-      const code = extractCodeBlock(assistantText);
-      if (!code) {
+      const blocks = extractCodeBlocks(assistantText);
+      if (!blocks || blocks.length === 0) {
         return {
           ok: false,
           step: currentStep,
           nextStep: currentStep,
           assistant: assistantText,
-          error: 'Error: LLM did not output a code block.',
+          error: 'Error: LLM did not output any code blocks. Ask the LLM to output the code in a fenced code block with a filename.',
         };
       }
-      const lang = extractCodeBlockLang(assistantText);
-      const filename = pickOutputFilename(lang);
 
-      // ---- Approve-Before-Write loop with rejection feedback ----
+      console.log(logTag, `extracted ${blocks.length} code block(s) from LLM response`);
+
       const STAGING_MAX_RETRIES = 3;
-      let attempt = 0;
-      let currentCode = code;
-      let currentFilename = filename;
+      const results = [];        // per-file outcome: { filename, action, error? }
       let lastAssistantText = assistantText;
+      let batchAborted = false;
+      let abortReason = '';
 
-      while (attempt < STAGING_MAX_RETRIES) {
-        attempt++;
-        console.log(logTag, `staging.propose attempt ${attempt}/${STAGING_MAX_RETRIES} for ${currentFilename}`);
+      // Process each file sequentially. staging.propose() already serializes
+      // (only one pending proposal at a time), so the user sees File 1, then
+      // File 2, etc. with the counter in the diff panel.
+      for (let blockIdx = 0; blockIdx < blocks.length && !batchAborted; blockIdx++) {
+        const block = blocks[blockIdx];
+        let currentFilename = block.filename;
+        let currentCode = block.content;
+        let attempt = 0;
 
-        let stagingResult;
-        try {
-          stagingResult = await staging.propose(currentFilename, currentCode, 'execute');
-        } catch (proposeErr) {
-          console.error(logTag, 'staging.propose failed:', proposeErr);
-          return {
-            ok: false,
-            step: currentStep,
-            nextStep: currentStep,
-            assistant: lastAssistantText,
-            error: `Staging error: ${proposeErr.message}`,
-          };
-        }
+        console.log(logTag, `processing file ${blockIdx + 1}/${blocks.length}: ${currentFilename}`);
 
-        // ACCEPT or MODIFY — file was written to disk (with backup if overwriting).
-        // Return success.
-        if (stagingResult.action === 'accept' || stagingResult.action === 'modify') {
-          const finalCode = stagingResult.finalContent;
-          const outPath = path.join(workspace, currentFilename);
-          notifyTreeChanged(currentFilename);
-          const saved = await saveCurrentSession();
-          return {
-            ok: true,
-            step: currentStep,
-            nextStep: currentStep,
-            assistant: lastAssistantText,
-            info: stagingResult.action === 'modify'
-              ? `Modified and written to ${currentFilename}`
-              : `Success! Code written to ${currentFilename}`,
-            wroteFile: true,
-            writtenPath: outPath,
-            writtenName: currentFilename,
-            modified: stagingResult.action === 'modify',
-            session: saved ? { id: saved.id, title: saved.title } : null,
-          };
-        }
+        // Per-file retry loop
+        while (attempt < STAGING_MAX_RETRIES) {
+          attempt++;
+          console.log(logTag, `  staging.propose attempt ${attempt}/${STAGING_MAX_RETRIES} for ${currentFilename}`);
 
-        // REJECT — feed the user's reason back to the LLM and retry.
-        // The agent loop must NOT hang; we capture the reason, append it to
-        // the conversation context, and re-call the LLM with a prompt that
-        // asks it to revise the code based on the rejection feedback.
-        if (stagingResult.action === 'reject') {
-          const reason = stagingResult.reason || 'User rejected the change (no reason provided)';
-          console.log(logTag, `staging.propose REJECTED on attempt ${attempt}: "${reason}"`);
-
-          // If this was the last attempt, surface the error to the user.
-          if (attempt >= STAGING_MAX_RETRIES) {
-            const saved = await saveCurrentSession();
-            return {
-              ok: false,
-              step: currentStep,
-              nextStep: currentStep,
-              assistant: lastAssistantText,
-              error: `User rejected the proposed write ${STAGING_MAX_RETRIES} times. Last reason: "${reason}". Please revise your request and try again.`,
-              session: saved ? { id: saved.id, title: saved.title } : null,
-            };
-          }
-
-          // Append the rejected assistant response to the conversation,
-          // then add a system-style user message that tells the LLM what
-          // was rejected and why, and asks it to revise.
-          convoState.messages.push({ role: 'assistant', content: lastAssistantText });
-          const feedbackMsg =
-            `The user REJECTED your proposed write to "${currentFilename}".\n\n` +
-            `Reason: "${reason}"\n\n` +
-            `Please revise the code based on this feedback and output a new code block. ` +
-            `Do NOT repeat the same approach that was just rejected. Address the user's concern directly.`;
-          convoState.messages.push({ role: 'user', content: feedbackMsg });
-
-          // Notify the renderer that we're re-calling the LLM (streaming).
-          sendToRenderer('llm:delta', { delta: '' }); // keep UI alive
-
-          // Re-call the LLM with the updated context.
-          console.log(logTag, `re-calling LLM after rejection (attempt ${attempt + 1})...`);
-          let revisedText;
+          let stagingResult;
           try {
-            llmBusy = true; // re-assert busy flag for the new LLM call
-            revisedText = await callLLM(settings, convoState.messages);
-          } catch (llmErr) {
-            llmBusy = false;
-            console.error(logTag, 'LLM re-call after rejection failed:', llmErr);
-            const saved = await saveCurrentSession();
-            return {
-              ok: false,
-              step: currentStep,
-              nextStep: currentStep,
-              assistant: lastAssistantText,
-              error: `LLM re-call after rejection failed: ${llmErr.message}`,
-              session: saved ? { id: saved.id, title: saved.title } : null,
-            };
-          } finally {
-            llmBusy = false;
+            stagingResult = await staging.propose(currentFilename, currentCode, 'execute');
+          } catch (proposeErr) {
+            console.error(logTag, 'staging.propose failed:', proposeErr);
+            results.push({ filename: currentFilename, action: 'error', error: proposeErr.message });
+            batchAborted = true;
+            abortReason = `Staging error on ${currentFilename}: ${proposeErr.message}`;
+            break;
           }
 
-          // Parse the revised response.
-          const revisedCode = extractCodeBlock(revisedText);
-          if (!revisedCode) {
-            // LLM didn't output a code block this time — surface its text
-            // and stop the loop. Don't keep retrying if the LLM gave up.
-            const saved = await saveCurrentSession();
-            return {
-              ok: false,
-              step: currentStep,
-              nextStep: currentStep,
-              assistant: revisedText,
-              error: 'LLM did not output a code block after rejection. Conversation context preserved — try again.',
-              session: saved ? { id: saved.id, title: saved.title } : null,
-            };
+          // ACCEPT or MODIFY — file was written. Move to the next file.
+          if (stagingResult.action === 'accept' || stagingResult.action === 'modify') {
+            notifyTreeChanged(currentFilename);
+            results.push({
+              filename: currentFilename,
+              action: stagingResult.action,
+              modified: stagingResult.action === 'modify',
+            });
+            console.log(logTag, `  ${currentFilename}: ${stagingResult.action}`);
+            break;  // exit retry loop, move to next file
           }
 
-          // Update state for the next loop iteration.
-          lastAssistantText = revisedText;
-          currentCode = revisedCode;
-          // Re-derive filename from the revised code block's language tag
-          // (the LLM may have switched languages, e.g. from .html to .js).
-          const revisedLang = extractCodeBlockLang(revisedText);
-          if (revisedLang) {
-            currentFilename = pickOutputFilename(revisedLang);
+          // REJECT — feed the user's reason back to the LLM and retry.
+          if (stagingResult.action === 'reject') {
+            const reason = stagingResult.reason || 'User rejected the change (no reason provided)';
+            console.log(logTag, `  ${currentFilename}: REJECTED (attempt ${attempt}) — "${reason}"`);
+
+            // If this was the last attempt for this file, abort the batch.
+            if (attempt >= STAGING_MAX_RETRIES) {
+              results.push({ filename: currentFilename, action: 'reject', error: reason });
+              batchAborted = true;
+              abortReason = `User rejected "${currentFilename}" ${STAGING_MAX_RETRIES} times. Last reason: "${reason}". Batch stopped — ${blocks.length - blockIdx - 1} file(s) not proposed.`;
+              console.warn(logTag, abortReason);
+              break;
+            }
+
+            // Append the rejected assistant response, then ask the LLM to
+            // revise JUST this file. The LLM may output one code block (the
+            // revised file) or multiple (we'll take the first one).
+            convoState.messages.push({ role: 'assistant', content: lastAssistantText });
+            const feedbackMsg =
+              `The user REJECTED your proposed write to "${currentFilename}".\n\n` +
+              `Reason: "${reason}"\n\n` +
+              `Please revise JUST this file based on the feedback and output a new code block for ${currentFilename}. ` +
+              `Do NOT repeat the same approach that was just rejected. Address the user's concern directly. ` +
+              `Output only the revised code block for this one file.`;
+            convoState.messages.push({ role: 'user', content: feedbackMsg });
+
+            sendToRenderer('llm:delta', { delta: '' }); // keep UI alive
+
+            console.log(logTag, `  re-calling LLM to revise ${currentFilename} (attempt ${attempt + 1})...`);
+            let revisedText;
+            try {
+              llmBusy = true;
+              revisedText = await callLLM(settings, convoState.messages);
+            } catch (llmErr) {
+              llmBusy = false;
+              console.error(logTag, 'LLM re-call after rejection failed:', llmErr);
+              results.push({ filename: currentFilename, action: 'error', error: llmErr.message });
+              batchAborted = true;
+              abortReason = `LLM re-call failed while revising ${currentFilename}: ${llmErr.message}`;
+              break;
+            } finally {
+              llmBusy = false;
+            }
+
+            // Parse the revised response — take the first code block.
+            const revisedBlocks = extractCodeBlocks(revisedText);
+            if (!revisedBlocks || revisedBlocks.length === 0) {
+              // LLM didn't output a code block — surface its text and stop.
+              const saved = await saveCurrentSession();
+              return {
+                ok: false,
+                step: currentStep,
+                nextStep: currentStep,
+                assistant: revisedText,
+                error: `LLM did not output a code block after rejecting ${currentFilename}. Batch stopped. ${results.length} file(s) were already written.`,
+                wroteFile: results.some((r) => r.action === 'accept' || r.action === 'modify'),
+                writtenFiles: results.filter((r) => r.action === 'accept' || r.action === 'modify').map((r) => r.filename),
+                session: saved ? { id: saved.id, title: saved.title } : null,
+              };
+            }
+
+            // Update state for the next retry iteration.
+            lastAssistantText = revisedText;
+            currentCode = revisedBlocks[0].content;
+            // If the LLM provided a filename for the revised block, use it.
+            // Otherwise keep the original filename.
+            if (revisedBlocks[0].filename && revisedBlocks[0].filename !== 'output.txt') {
+              currentFilename = revisedBlocks[0].filename;
+            }
+            // Loop continues — staging.propose will be called again with the revised code.
+            continue;
           }
-          // Loop continues — staging.propose will be called again with the revised code.
-          continue;
+
+          // Unknown action — should never happen.
+          console.error(logTag, 'staging.propose returned unknown action:', stagingResult.action);
+          results.push({ filename: currentFilename, action: 'error', error: `Unknown action: ${stagingResult.action}` });
+          batchAborted = true;
+          abortReason = `Unknown staging action for ${currentFilename}: ${stagingResult.action}`;
+          break;
         }
+      }
 
-        // Unknown action — should never happen.
-        console.error(logTag, 'staging.propose returned unknown action:', stagingResult.action);
+      // ---- Batch complete — build summary response ----
+      const saved = await saveCurrentSession();
+      const writtenFiles = results
+        .filter((r) => r.action === 'accept' || r.action === 'modify')
+        .map((r) => r.filename);
+      const failedFiles = results
+        .filter((r) => r.action === 'reject' || r.action === 'error')
+        .map((r) => ({ filename: r.filename, error: r.error }));
+
+      if (batchAborted && writtenFiles.length === 0) {
+        // Nothing was written — surface the error.
         return {
           ok: false,
           step: currentStep,
           nextStep: currentStep,
           assistant: lastAssistantText,
-          error: `Unknown staging action: ${stagingResult.action}`,
+          error: abortReason || 'Batch aborted with no files written.',
+          session: saved ? { id: saved.id, title: saved.title } : null,
         };
       }
 
-      // Should not reach here, but just in case.
+      // At least some files were written. Build a success/info message.
+      const totalFiles = blocks.length;
+      const succeededCount = writtenFiles.length;
+      const failedCount = failedFiles.length;
+
+      let infoMsg;
+      if (failedCount === 0) {
+        infoMsg = `Success! ${succeededCount} file${succeededCount === 1 ? '' : 's'} written: ${writtenFiles.join(', ')}`;
+      } else if (succeededCount > 0) {
+        infoMsg = `Wrote ${succeededCount} of ${totalFiles} files: ${writtenFiles.join(', ')}. ` +
+                  `Failed: ${failedFiles.map((f) => `${f.filename} (${f.error})`).join('; ')}`;
+      } else {
+        infoMsg = `All ${totalFiles} files failed. ${abortReason || ''}`;
+      }
+
       return {
-        ok: false,
+        ok: succeededCount > 0,
         step: currentStep,
         nextStep: currentStep,
         assistant: lastAssistantText,
-        error: 'Staging loop exhausted without resolution.',
+        info: infoMsg,
+        wroteFile: succeededCount > 0,
+        writtenFiles,
+        writtenPath: writtenFiles.length > 0 ? path.join(workspace, writtenFiles[0]) : '',
+        writtenName: writtenFiles[0] || '',
+        batchResults: results,
+        session: saved ? { id: saved.id, title: saved.title } : null,
+        ...(batchAborted && failedCount > 0 ? { error: abortReason } : {}),
       };
     }
 

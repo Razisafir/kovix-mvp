@@ -186,6 +186,69 @@
   }
 
   /**
+   * Define a custom Monaco theme (`kovix-dark`) that matches the Kovix dark
+   * premium palette. The editor background is `#111113` (the same as
+   * `--monaco-bg` / `--bg-surface`) so Monaco blends seamlessly into the
+   * staging panel without needing CSS overrides.
+   *
+   * Token colors are inherited from `vs-dark` (Monaco's built-in dark theme)
+   * so syntax highlighting remains familiar to developers. Only the surfaces
+   * (background, line-number gutter, selection) are re-pointed.
+   *
+   * @param {typeof import('monaco-editor')} monaco
+   */
+  function defineKovixDarkTheme(monaco) {
+    if (!monaco || !monaco.editor || typeof monaco.editor.defineTheme !== 'function') return;
+    monaco.editor.defineTheme('kovix-dark', {
+      base: 'vs-dark',           // inherit token colors from vs-dark
+      inherit: true,
+      rules: [
+        // Keep vs-dark token colors — these are inherited, no overrides needed.
+      ],
+      colors: {
+        // Editor background — matches --monaco-bg / --bg-surface
+        'editor.background': '#111113',
+        // Gutter (line numbers) — matches --bg-surface, slightly different feel
+        'editorGutter.background': '#111113',
+        // Line number color — matches --text-tertiary
+        'editorLineNumber.foreground': '#6b6b75',
+        'editorLineNumber.activeForeground': '#a0a0a8',
+        // Current line highlight — subtle elevated surface
+        'editor.lineHighlightBackground': '#18181b',
+        'editor.lineHighlightBorder': '#18181b',
+        // Selection — accent-soft
+        'editor.selectionBackground': 'rgba(99, 102, 241, 0.25)',
+        'editor.selectionHighlightBackground': 'rgba(99, 102, 241, 0.15)',
+        // Cursor — accent
+        'editorCursor.foreground': '#6366f1',
+        // Whitespace
+        'editorWhitespace.foreground': '#2a2a30',
+        // Indent guides
+        'editorIndentGuide.background': '#1f1f23',
+        'editorIndentGuide.activeBackground': '#2a2a30',
+        // Bracket matching
+        'editorBracketMatch.background': 'rgba(99, 102, 241, 0.15)',
+        'editorBracketMatch.border': '#6366f1',
+        // Scrollbar
+        'editorScrollbar.hoverBackground': '#3a3a42',
+        'editorScrollbar.background': '#18181b',
+        'editorScrollbarSlider.background': '#2a2a30',
+        'editorScrollbarSlider.hoverBackground': '#3a3a42',
+        'editorScrollbarSlider.activeBackground': '#3a3a42',
+        // Diff editor — added/removed lines
+        'diffEditor.insertedTextBackground': 'rgba(16, 185, 129, 0.12)',
+        'diffEditor.removedTextBackground': 'rgba(239, 68, 68, 0.12)',
+        'diffEditor.insertedLineBackground': 'rgba(16, 185, 129, 0.08)',
+        'diffEditor.removedLineBackground': 'rgba(239, 68, 68, 0.08)',
+        'diffEditorGutter.insertedLineBackground': 'rgba(16, 185, 129, 0.08)',
+        'diffEditorGutter.removedLineBackground': 'rgba(239, 68, 68, 0.08)',
+        // Focus border — accent
+        'editor.focusBorder': '#6366f1',
+      },
+    });
+  }
+
+  /**
    * Boot Monaco (lazy). Resolves to the `monaco` global.
    * Subsequent calls reuse the same Promise.
    * @returns {Promise<typeof import('monaco-editor')>}
@@ -203,9 +266,11 @@
             [EDITOR_MAIN_MODULE],
             () => {
               if (window.monaco) {
-                // Apply the dark theme up-front so the first diff view
-                // doesn't flash white.
-                window.monaco.editor.setTheme('vs-dark');
+                // Define the custom Kovix dark theme and apply it up-front
+                // so the first diff view doesn't flash white or mismatch
+                // the staging panel background.
+                defineKovixDarkTheme(window.monaco);
+                window.monaco.editor.setTheme('kovix-dark');
                 resolve(window.monaco);
               } else {
                 reject(new Error('Monaco editor.main loaded but window.monaco is missing'));
@@ -245,7 +310,7 @@
         renderSideBySide: true,
         readOnly: true,
         originalEditable: false,
-        theme: 'vs-dark',
+        theme: 'kovix-dark',
         minimap: { enabled: false },
         scrollBeyondLastLine: false,
         fontSize: 13,
@@ -287,7 +352,7 @@
       const editor = monaco.editor.create(container, {
         value: content == null ? '' : String(content),
         language: lang,
-        theme: 'vs-dark',
+        theme: 'kovix-dark',
         automaticLayout: true,
         minimap: { enabled: false },
         scrollBeyondLastLine: false,

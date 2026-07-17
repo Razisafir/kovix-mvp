@@ -559,12 +559,13 @@ To save a memory:
 
 1. **Output ONLY the tool call** — do NOT wrap it in <think> tags, do NOT add explanation before it, do NOT close with </think>.
 2. **Always close with </tool_call>** — never leave it open.
-3. **One tool call per response** — wait for the result before calling the next tool.
+3. **Multiple tool calls per response are allowed** — if you need to write multiple files (e.g. index.html + App.jsx + styles.css), output multiple <tool_call> blocks in a single response. Each will be executed and proposed to the user sequentially through the Approve-Before-Write gate. The user will review each file diff one at a time.
 4. **After receiving a tool result**, you can either:
    - Call another tool (same format)
    - Respond to the user with normal text (no tool call)
 5. **NEVER fabricate results** — if you haven't called a tool, you don't have the result. Call the tool first, then report what it returned.
 6. **NEVER use <think> tags** — they break the tool parser. Just output the tool call directly.
+7. **If a write_file tool was REJECTED**, the tool result will tell you the user's reason. Read it carefully, revise your approach based on the feedback, and try again with a new write_file call. Do NOT repeat the same code that was just rejected.
 
 ## Workflow
 1. User asks a question
