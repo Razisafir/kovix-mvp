@@ -36,6 +36,21 @@ contextBridge.exposeInMainWorld('kovix', {
   getTree:     () => ipcRenderer.invoke('fs:get-tree'),
   readFile:    (filePath) => ipcRenderer.invoke('fs:read-file', filePath),
 
+  /* ---------------- Staging (Approve-Before-Write Gate) ----------- */
+  //
+  // These methods are the renderer's only way to interact with the staging
+  // queue. The renderer subscribes to onStagingPropose (new diff to review)
+  // and onStagingQueueUpdate (queue state changed), then calls resolveStaging
+  // when the user clicks Accept / Reject / Modify.
+  //
+  resolveStaging:     (decision) => ipcRenderer.invoke('staging:resolve', decision),
+  getCurrentStaging:  () => ipcRenderer.invoke('staging:get-current'),
+  getStagingQueue:    () => ipcRenderer.invoke('staging:get-queue'),
+  setStagingAutoMode: (mode, reason) =>
+    ipcRenderer.invoke('staging:set-auto-mode', { mode, reason }),
+  clearStagingAutoMode: () => ipcRenderer.invoke('staging:clear-auto-mode'),
+  resetStaging:       () => ipcRenderer.invoke('staging:reset'),
+
   /* ---------------- Events from main ----------------- */
   /**
    * Subscribe to fs:tree-changed events.
@@ -79,5 +94,31 @@ contextBridge.exposeInMainWorld('kovix', {
     const listener = (_evt, payload) => cb(payload);
     ipcRenderer.on('tool:result', listener);
     return () => ipcRenderer.removeListener('tool:result', listener);
+  },
+
+  /**
+   * Subscribe to staging:propose events (a new file write is awaiting
+   * user approval). The renderer should render a Monaco diff with the
+   * proposal's oldContent vs newContent and show Accept / Reject / Modify
+   * buttons.
+   * @param {(payload:{proposal: {id, path, absPath, oldContent, newContent, source, isCreate, status, createdAt}}) => void} cb
+   * @returns {() => void} unsubscribe fn
+   */
+  onStagingPropose: (cb) => {
+    const listener = (_evt, payload) => cb(payload);
+    ipcRenderer.on('staging:propose', listener);
+    return () => ipcRenderer.removeListener('staging:propose', listener);
+  },
+
+  /**
+   * Subscribe to staging:queue-update events (the staging queue state
+   * changed — proposal added, resolved, auto-mode toggled, etc).
+   * @param {(payload:{queue: Array, currentIndex: number, autoMode: string, pendingCount: number, resolvedCount: number, errorCount: number}) => void} cb
+   * @returns {() => void} unsubscribe fn
+   */
+  onStagingQueueUpdate: (cb) => {
+    const listener = (_evt, payload) => cb(payload);
+    ipcRenderer.on('staging:queue-update', listener);
+    return () => ipcRenderer.removeListener('staging:queue-update', listener);
   },
 });

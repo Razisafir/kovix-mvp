@@ -1247,6 +1247,9 @@ function bindEvents() {
 async function init() {
   bindEvents();
   initSidebarResizers();
+  // Boot the Approve-Before-Write staging panel (Monaco diff UI).
+  // Safe to call before settings load — it only binds DOM + IPC listeners.
+  try { StagingPanel.init(); } catch (err) { console.error('[staging-panel] init failed:', err); }
   setActiveStep('idea');
   try {
     const s = await window.kovix.getSettings();
@@ -1320,5 +1323,456 @@ function initSidebarResizers() {
     });
   });
 }
+
+/* -------------------------------------------------------------------------- */
+/* StagingPanel — Approve-Before-Write Gate UI (Monaco Diff Editor)           */
+/* -------------------------------------------------------------------------- */
+//
+// Subscribes to staging IPC events (onStagingPropose / onStagingQueueUpdate)
+// and drives the bottom-docked Monaco diff panel. Every AI-proposed file
+// write goes through here before it touches disk.
+//
+// Monaco is loaded LAZILY — only when the first proposal arrives — so app
+// boot isn't slowed down by the ~3MB Monaco bundle. Once loaded, the
+// `monaco` instance is cached by MonacoLoader and reused for every
+// subsequent proposal.
+//
+// Editor lifecycle: switching between Diff View and Edit (Modify) mode
+// disposes the previous Monaco editor before creating a new one to prevent
+// DOM-node leaks. Both editors use the `vs-dark` theme to match Kovix's
+// dark UI.
+
+const StagingPanel = (function () {
+  // --- DOM references (resolved in init()) ---
+  let dom = null;
+
+  // --- Module state ---
+  let currentProposal = null;     // most recent proposal object
+  let currentQueue = null;        // most recent queue summary
+  let diffEditor = null;          // active Monaco diff editor instance
+  let editEditor = null;          // active Monaco inline editor instance (modify mode)
+  let mode = 'diff';              // 'diff' | 'edit'
+  let busy = false;               // true while we're awaiting a resolve() IPC call
+  let pendingRejectAll = false;   // true when reject-reason input is open for "Reject All"
+
+  /* ---------- Init ---------- */
+
+  function init() {
+    dom = {
+      panel:         $('#staging-panel'),
+      title:         $('#staging-title'),
+      path:          $('#staging-path'),
+      counterText:   $('#staging-counter-text'),
+      closeBtn:      $('#staging-close-btn'),
+      acceptBtn:     $('#staging-accept-btn'),
+      modifyBtn:     $('#staging-modify-btn'),
+      rejectBtn:     $('#staging-reject-btn'),
+      acceptAllBtn:  $('#staging-accept-all-btn'),
+      rejectAllBtn:  $('#staging-reject-all-btn'),
+      rejectWrap:    $('#staging-reject-reason-wrap'),
+      rejectInput:   $('#staging-reject-reason'),
+      rejectConfirm: $('#staging-reject-confirm-btn'),
+      rejectCancel:  $('#staging-reject-cancel-btn'),
+      modeDiffTab:   $('#staging-mode-diff'),
+      modeEditTab:   $('#staging-mode-edit'),
+      container:     $('#staging-monaco-container'),
+      status:        $('#staging-status'),
+    };
+
+    if (!dom || !dom.panel) {
+      console.warn('[staging-panel] panel element not found — feature disabled');
+      return;
+    }
+
+    // Subscribe to staging IPC events
+    if (window.kovix && typeof window.kovix.onStagingPropose === 'function') {
+      window.kovix.onStagingPropose((payload) => onPropose(payload));
+    }
+    if (window.kovix && typeof window.kovix.onStagingQueueUpdate === 'function') {
+      window.kovix.onStagingQueueUpdate((payload) => onQueueUpdate(payload));
+    }
+
+    // Button listeners
+    dom.acceptBtn.addEventListener('click', onAccept);
+    dom.modifyBtn.addEventListener('click', onModify);
+    dom.rejectBtn.addEventListener('click', onRejectClick);
+    dom.rejectConfirm.addEventListener('click', onRejectConfirm);
+    dom.rejectCancel.addEventListener('click', onRejectCancel);
+    dom.acceptAllBtn.addEventListener('click', onAcceptAll);
+    dom.rejectAllBtn.addEventListener('click', onRejectAll);
+    dom.closeBtn.addEventListener('click', onClose);
+    dom.modeDiffTab.addEventListener('click', () => switchMode('diff'));
+    dom.modeEditTab.addEventListener('click', () => switchMode('edit'));
+
+    // Enter confirms, Escape cancels in the reject-reason input
+    dom.rejectInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); onRejectConfirm(); }
+      else if (e.key === 'Escape') { e.preventDefault(); onRejectCancel(); }
+    });
+
+    // Refresh queue state on boot (in case a proposal was pending before
+    // the renderer reloaded — e.g. after a hot reload during development).
+    if (window.kovix && typeof window.kovix.getStagingQueue === 'function') {
+      window.kovix.getStagingQueue()
+        .then((q) => { onQueueUpdate(q); })
+        .catch((err) => console.warn('[staging-panel] initial getStagingQueue failed:', err));
+    }
+    if (window.kovix && typeof window.kovix.getCurrentStaging === 'function') {
+      window.kovix.getCurrentStaging()
+        .then((p) => { if (p) onPropose({ proposal: p }); })
+        .catch((err) => console.warn('[staging-panel] initial getCurrentStaging failed:', err));
+    }
+
+    console.log('[staging-panel] initialized');
+  }
+
+  /* ---------- Helpers ---------- */
+
+  function showStatus(msg, kind) {
+    if (!dom.status) return;
+    dom.status.textContent = msg || '';
+    dom.status.classList.remove('error', 'info');
+    if (kind) dom.status.classList.add(kind);
+    dom.status.classList.toggle('hidden', !msg);
+  }
+
+  function clearStatus() {
+    if (!dom.status) return;
+    dom.status.textContent = '';
+    dom.status.classList.add('hidden');
+  }
+
+  function showPanel() {
+    if (!dom.panel) return;
+    dom.panel.classList.remove('hidden');
+    // Trigger a layout pass on the next frame so Monaco measures the
+    // now-non-zero container correctly.
+    requestAnimationFrame(() => {
+      if (diffEditor) { try { diffEditor.layout(); } catch (_) { /* noop */ } }
+      if (editEditor) { try { editEditor.layout(); } catch (_) { /* noop */ } }
+    });
+  }
+
+  function hidePanel() {
+    if (!dom.panel) return;
+    dom.panel.classList.add('hidden');
+  }
+
+  function disposeEditors() {
+    if (diffEditor) {
+      try {
+        const m = diffEditor.getModel();
+        if (m) {
+          if (m.original) m.original.dispose();
+          if (m.modified) m.modified.dispose();
+        }
+        diffEditor.dispose();
+      } catch (err) {
+        console.warn('[staging-panel] diffEditor.dispose failed:', err);
+      }
+      diffEditor = null;
+    }
+    if (editEditor) {
+      try { editEditor.dispose(); } catch (err) {
+        console.warn('[staging-panel] editEditor.dispose failed:', err);
+      }
+      editEditor = null;
+    }
+    // Clear any leftover Monaco DOM in the container
+    if (dom.container) dom.container.innerHTML = '';
+  }
+
+  function setBusy(b) {
+    busy = b;
+    if (!dom.acceptBtn) return;
+    dom.acceptBtn.disabled = b;
+    dom.modifyBtn.disabled = b;
+    dom.rejectBtn.disabled = b;
+    dom.acceptAllBtn.disabled = b;
+    dom.rejectAllBtn.disabled = b;
+  }
+
+  function updateCounter() {
+    if (!dom.counterText) return;
+    if (!currentQueue) {
+      dom.counterText.textContent = '';
+      return;
+    }
+    const q = currentQueue;
+    const total = q.queue ? q.queue.length : 0;
+    const idx = q.currentIndex || 0;
+    const x = Math.min(idx + 1, total || 1);
+    let html = 'File ' + x + ' of ' + total;
+    if (q.autoMode === 'accept-all') {
+      html += ' <span class="auto-badge accept">Auto: Accept All</span>';
+    } else if (q.autoMode === 'reject-all') {
+      html += ' <span class="auto-badge reject">Auto: Reject All</span>';
+    }
+    dom.counterText.innerHTML = html;
+
+    // Highlight the appropriate auto button when its mode is engaged
+    if (dom.acceptAllBtn) {
+      dom.acceptAllBtn.classList.toggle('active', q.autoMode === 'accept-all');
+    }
+    if (dom.rejectAllBtn) {
+      dom.rejectAllBtn.classList.toggle('active', q.autoMode === 'reject-all');
+    }
+  }
+
+  function showRejectReason(isRejectAll) {
+    pendingRejectAll = !!isRejectAll;
+    if (!dom.rejectWrap) return;
+    dom.rejectWrap.classList.remove('hidden');
+    if (dom.rejectInput) {
+      dom.rejectInput.value = '';
+      if (isRejectAll) {
+        dom.rejectInput.placeholder = 'Why reject ALL remaining writes? (fed back to the agent)';
+      } else {
+        dom.rejectInput.placeholder = 'Why are you rejecting this? (fed back to the agent for retry)';
+      }
+      // Focus on next tick so the input is visible first
+      setTimeout(() => { try { dom.rejectInput.focus(); } catch (_) { /* noop */ } }, 0);
+    }
+  }
+
+  function hideRejectReason() {
+    pendingRejectAll = false;
+    if (!dom.rejectWrap) return;
+    dom.rejectWrap.classList.add('hidden');
+    if (dom.rejectInput) dom.rejectInput.value = '';
+  }
+
+  function setAcceptLabel(label) {
+    if (!dom.acceptBtn) return;
+    const lbl = dom.acceptBtn.querySelector('span:last-child');
+    if (lbl) lbl.textContent = label;
+  }
+
+  /* ---------- Event handlers ---------- */
+
+  function onPropose(payload) {
+    if (!payload || !payload.proposal) return;
+    currentProposal = payload.proposal;
+    clearStatus();
+    hideRejectReason();
+    // Reset to diff mode for each new proposal
+    mode = 'diff';
+    if (dom.modeDiffTab) dom.modeDiffTab.classList.add('active');
+    if (dom.modeEditTab) dom.modeEditTab.classList.remove('active');
+    setAcceptLabel('Accept');
+
+    // Header
+    if (dom.title) {
+      dom.title.textContent = currentProposal.isCreate ? 'Approve Create' : 'Approve Write';
+    }
+    if (dom.path) dom.path.textContent = currentProposal.path || '';
+
+    // Show panel + lazy-load Monaco
+    showPanel();
+    loadDiffEditor();
+  }
+
+  function loadDiffEditor() {
+    const loader = window.MonacoLoader;
+    if (!loader || typeof loader.createDiffEditor !== 'function') {
+      showStatus('Monaco loader not available — cannot show diff.', 'error');
+      return;
+    }
+    if (!currentProposal) return;
+    if (dom.container) dom.container.classList.add('is-loading');
+    const lang = loader.detectLanguage(currentProposal.path);
+    // Dispose any prior editor before creating a new one
+    disposeEditors();
+    loader.createDiffEditor(
+      dom.container,
+      currentProposal.oldContent == null ? '' : String(currentProposal.oldContent),
+      currentProposal.newContent == null ? '' : String(currentProposal.newContent),
+      lang
+    ).then((editor) => {
+      diffEditor = editor;
+      if (dom.container) dom.container.classList.remove('is-loading');
+      // Force a layout now that Monaco is mounted and the panel is visible
+      try { diffEditor.layout(); } catch (_) { /* noop */ }
+    }).catch((err) => {
+      if (dom.container) dom.container.classList.remove('is-loading');
+      showStatus('Failed to load Monaco: ' + (err && err.message ? err.message : String(err)), 'error');
+    });
+  }
+
+  function onQueueUpdate(payload) {
+    currentQueue = payload;
+    updateCounter();
+    // If the queue is empty / no pending proposal, hide the panel
+    if (payload && payload.pendingCount === 0 && !payload.queue.some((p) => p.status === 'pending')) {
+      if (currentProposal && payload.autoMode === 'manual') {
+        // No more pending — clear out
+        disposeEditors();
+        hidePanel();
+        currentProposal = null;
+      }
+    }
+  }
+
+  function onAccept() {
+    if (busy || !currentProposal) return;
+    if (mode === 'edit' && editEditor) {
+      // Submit the user-edited content as a modify resolution
+      let editedContent;
+      try { editedContent = editEditor.getValue(); }
+      catch (_) { editedContent = currentProposal.newContent; }
+      resolveAndClose({ action: 'modify', finalContent: editedContent });
+    } else {
+      resolveAndClose({ action: 'accept' });
+    }
+  }
+
+  function onRejectClick() {
+    if (busy || !currentProposal) return;
+    showRejectReason(false);
+  }
+
+  function onRejectConfirm() {
+    if (busy || !currentProposal) return;
+    const reason = (dom.rejectInput && dom.rejectInput.value ? dom.rejectInput.value : '').trim();
+    if (pendingRejectAll) {
+      // Reject All — set auto-mode with the entered reason
+      setBusy(true);
+      window.kovix.setStagingAutoMode('reject-all', reason || 'User rejected all remaining changes')
+        .then(() => {
+          setBusy(false);
+          hideRejectReason();
+          showStatus('Auto-reject mode engaged. Remaining writes will be rejected automatically.', 'info');
+        })
+        .catch((err) => {
+          setBusy(false);
+          showStatus('Reject All error: ' + (err && err.message ? err.message : String(err)), 'error');
+        });
+      return;
+    }
+    // Single reject
+    resolveAndClose({
+      action: 'reject',
+      reason: reason || 'User rejected the change',
+    });
+  }
+
+  function onRejectCancel() {
+    hideRejectReason();
+  }
+
+  function onModify() {
+    // Switching to edit mode is the same as clicking the Edit tab.
+    switchMode('edit');
+  }
+
+  function switchMode(newMode) {
+    if (newMode === mode && (diffEditor || editEditor)) {
+      // Already in the requested mode and an editor is mounted — nothing to do
+      // (we still fall through for the very first switch, where mode === 'diff'
+      // but diffEditor hasn't been created yet).
+      return;
+    }
+    mode = newMode;
+    if (dom.modeDiffTab) dom.modeDiffTab.classList.toggle('active', newMode === 'diff');
+    if (dom.modeEditTab) dom.modeEditTab.classList.toggle('active', newMode === 'edit');
+
+    if (!currentProposal) return;
+    const loader = window.MonacoLoader;
+    if (!loader) {
+      showStatus('Monaco loader not available.', 'error');
+      return;
+    }
+
+    if (newMode === 'edit') {
+      // Dispose the diff editor and create an editable editor pre-loaded
+      // with proposal.newContent. The user edits this; clicking the (now
+      // repurposed) Accept button submits their version as a 'modify'.
+      const content = currentProposal.newContent || '';
+      disposeEditors();
+      if (dom.container) dom.container.classList.add('is-loading');
+      const lang = loader.detectLanguage(currentProposal.path);
+      loader.createEditor(dom.container, content, lang)
+        .then((editor) => {
+          editEditor = editor;
+          if (dom.container) dom.container.classList.remove('is-loading');
+          try { editEditor.layout(); } catch (_) { /* noop */ }
+          setAcceptLabel('Save Changes');
+        })
+        .catch((err) => {
+          if (dom.container) dom.container.classList.remove('is-loading');
+          showStatus('Failed to load editor: ' + (err && err.message ? err.message : String(err)), 'error');
+        });
+    } else {
+      // Back to diff view — recreate the diff editor. We use the original
+      // oldContent vs newContent (any inline edits made in edit mode are
+      // discarded unless the user clicked Save Changes first).
+      loadDiffEditor();
+      setAcceptLabel('Accept');
+    }
+  }
+
+  function onAcceptAll() {
+    if (busy) return;
+    if (!window.confirm('Accept ALL remaining proposed writes automatically?\n\nFiles will be written to disk without further prompts.')) {
+      return;
+    }
+    setBusy(true);
+    window.kovix.setStagingAutoMode('accept-all')
+      .then(() => {
+        setBusy(false);
+        // The backend will resolve the current proposal via auto-mode and
+        // emit a queue-update reflecting autoMode='accept-all'.
+        showStatus('Auto-accept mode engaged. Remaining writes will be applied automatically.', 'info');
+      })
+      .catch((err) => {
+        setBusy(false);
+        showStatus('Accept All error: ' + (err && err.message ? err.message : String(err)), 'error');
+      });
+  }
+
+  function onRejectAll() {
+    if (busy) return;
+    showRejectReason(true);
+  }
+
+  function onClose() {
+    if (busy) return;
+    if (!currentProposal) {
+      hidePanel();
+      return;
+    }
+    // Close = reject with a fixed reason
+    resolveAndClose({
+      action: 'reject',
+      reason: 'User closed the panel',
+    });
+  }
+
+  /* ---------- Resolve + cleanup helper ---------- */
+
+  function resolveAndClose(decision) {
+    setBusy(true);
+    window.kovix.resolveStaging(decision)
+      .then((res) => {
+        setBusy(false);
+        if (res && res.ok) {
+          hideRejectReason();
+          disposeEditors();
+          // Backend will emit a staging:propose event for the next pending
+          // proposal (if any), which re-shows the panel. Otherwise hide.
+          currentProposal = null;
+          hidePanel();
+        } else {
+          showStatus((res && res.error) || 'Resolve failed.', 'error');
+        }
+      })
+      .catch((err) => {
+        setBusy(false);
+        showStatus('Resolve error: ' + (err && err.message ? err.message : String(err)), 'error');
+      });
+  }
+
+  return { init };
+})();
 
 document.addEventListener('DOMContentLoaded', init);

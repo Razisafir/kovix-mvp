@@ -303,6 +303,74 @@
     </div>
   </div>
 
+  <!-- ============================ Staging Panel (Approve-Before-Write Gate) ============================ -->
+  <!--
+    Bottom-docked overlay shown when an AI-proposed file write is awaiting
+    user approval. Hosts a Monaco diff editor and Accept / Reject / Modify
+    controls. Lazy-mounted: Monaco is only loaded when the first proposal
+    arrives (see renderer.js StagingPanel module).
+  -->
+  <section id="staging-panel" class="staging-panel hidden">
+    <div class="staging-header">
+      <div class="staging-title-wrap">
+        <span class="material-symbols-outlined">shield</span>
+        <span id="staging-title" class="staging-title">Approve Write</span>
+        <span id="staging-path" class="staging-path"></span>
+      </div>
+      <div class="staging-counter">
+        <span id="staging-counter-text"></span>  <!-- "File 1 of 3" -->
+      </div>
+      <button id="staging-close-btn" class="header-icon-btn" title="Close (rejects)">
+        <span class="material-symbols-outlined">close</span>
+      </button>
+    </div>
+
+    <div class="staging-toolbar">
+      <button id="staging-accept-btn" class="staging-btn primary">
+        <span class="material-symbols-outlined">check</span>
+        <span>Accept</span>
+      </button>
+      <button id="staging-modify-btn" class="staging-btn">
+        <span class="material-symbols-outlined">edit</span>
+        <span>Modify</span>
+      </button>
+      <button id="staging-reject-btn" class="staging-btn danger">
+        <span class="material-symbols-outlined">close</span>
+        <span>Reject</span>
+      </button>
+      <div class="staging-divider"></div>
+      <button id="staging-accept-all-btn" class="staging-btn ghost" title="Accept all remaining writes">
+        <span class="material-symbols-outlined">done_all</span>
+        <span>Accept All</span>
+      </button>
+      <button id="staging-reject-all-btn" class="staging-btn ghost danger" title="Reject all remaining writes">
+        <span class="material-symbols-outlined">block</span>
+        <span>Reject All</span>
+      </button>
+    </div>
+
+    <!-- Reject reason input (shown when user clicks Reject) -->
+    <div id="staging-reject-reason-wrap" class="staging-reject-reason-wrap hidden">
+      <input id="staging-reject-reason" type="text" class="staging-reject-input"
+             placeholder="Why are you rejecting this? (fed back to the agent for retry)" />
+      <button id="staging-reject-confirm-btn" class="staging-btn danger">Confirm Reject</button>
+      <button id="staging-reject-cancel-btn" class="staging-btn ghost">Cancel</button>
+    </div>
+
+    <!-- Mode toggle: Diff (read-only) vs Edit (modify in place) -->
+    <div class="staging-mode-tabs">
+      <button id="staging-mode-diff" class="staging-mode-tab active">Diff View</button>
+      <button id="staging-mode-edit" class="staging-mode-tab">Edit (Modify)</button>
+    </div>
+
+    <!-- Monaco container (used for both diff editor and inline editor) -->
+    <div id="staging-monaco-container" class="staging-monaco-container"></div>
+
+    <!-- Status / error banner -->
+    <div id="staging-status" class="staging-status hidden"></div>
+  </section>
+
+  <script src="monaco-loader.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

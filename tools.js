@@ -36,6 +36,17 @@ const fsp = require('fs').promises;
 const path = require('path');
 const { exec } = require('child_process');
 
+// THE APPROVE-BEFORE-WRITE GATE — the write_file tool no longer touches disk
+// directly. It calls staging.propose(), which surfaces a Monaco diff to the
+// user. The tool AWAITS the user's resolution (accept / modify / reject)
+// before returning. On reject, the rejection reason is returned to the LLM
+// so it can revise and try again.
+//
+// NOTE: staging is a singleton that must be initialized by main.js before
+// any tool is executed. If staging is not initialized (e.g. tests that use
+// tools.js standalone), we fall back to direct writes for backward compat.
+const { staging } = require('./staging');
+
 /* -------------------------------------------------------------------------- */
 /* Tool definitions                                                           */
 /* -------------------------------------------------------------------------- */
@@ -258,15 +269,65 @@ async function toolReadFile(args, workspace) {
 
 async function toolWriteFile(args, workspace) {
   const filePath = resolvePath(args.path, workspace);
+  const relPath = path.isAbsolute(args.path)
+    ? path.relative(workspace, filePath)
+    : args.path;
+
+  // Defensive: if staging was never initialized (e.g. standalone test),
+  // fall back to a direct write. This path should NOT execute in production
+  // — main.js always calls staging.init() on app ready.
+  if (!staging || typeof staging.isInitialized !== 'function' || !staging.isInitialized()) {
+    console.warn('[tool] write_file: staging not initialized, falling back to direct write');
+    try {
+      const dir = path.dirname(filePath);
+      await fsp.mkdir(dir, { recursive: true });
+      await fsp.writeFile(filePath, args.content, 'utf8');
+      return { ok: true, result: `Wrote ${args.content.length} chars to ${args.path} (direct, no staging)` };
+    } catch (err) {
+      return { ok: false, error: `Could not write ${args.path}: ${err.message}` };
+    }
+  }
+
   try {
-    // Create parent directories if needed
-    const dir = path.dirname(filePath);
-    await fsp.mkdir(dir, { recursive: true });
-    await fsp.writeFile(filePath, args.content, 'utf8');
-    console.log('[tool] write_file: wrote', args.content.length, 'chars to', filePath);
-    return { ok: true, result: `Successfully wrote ${args.content.length} characters to ${args.path}` };
+    // Route through the Approve-Before-Write Gate. This AWAITS user
+    // resolution — the tool does not return until the user has clicked
+    // Accept, Modify, or Reject in the Monaco diff panel.
+    const result = await staging.propose(relPath, args.content, 'write_file');
+
+    if (result.action === 'accept') {
+      return {
+        ok: true,
+        result: `User ACCEPTED the write to ${args.path}. ${args.content.length} chars written to disk (backup created if file existed).`,
+      };
+    }
+
+    if (result.action === 'modify') {
+      const editedLen = (result.finalContent || '').length;
+      const origLen = args.content.length;
+      return {
+        ok: true,
+        result: `User MODIFIED the write to ${args.path}. Original: ${origLen} chars, edited: ${editedLen} chars. The edited version was written to disk (backup created if file existed).`,
+      };
+    }
+
+    if (result.action === 'reject') {
+      // The rejection reason is returned to the LLM as the tool result.
+      // The LLM should read this and decide whether to revise and retry,
+      // or to abandon the write and continue with a different approach.
+      const reason = result.reason || '(no reason provided)';
+      return {
+        ok: false,
+        error: `User REJECTED the write to ${args.path}. Reason: "${reason}". The file was NOT modified. Revise your approach based on this feedback and try again, or proceed with a different strategy.`,
+      };
+    }
+
+    // Unknown action — should never happen.
+    return {
+      ok: false,
+      error: `Staging returned unknown action: ${result.action}`,
+    };
   } catch (err) {
-    return { ok: false, error: `Could not write ${args.path}: ${err.message}` };
+    return { ok: false, error: `Staging propose failed for ${args.path}: ${err.message}` };
   }
 }
 

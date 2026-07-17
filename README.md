@@ -1,160 +1,41 @@
-# KOVIX
+# Kovix
 
-> Autonomous, self-healing agentic IDE. Shifts AI from "chat-based assistance"
-> to "autonomous execution." You supply a vibe; KOVIX plans, applies, and unifies.
+The AI development environment built for people who have ideas, not code.
 
-## v0.2 highlights
+Kovix is a standalone, offline-first desktop application that takes a user from a rough idea all the way to working software — through conversation, a shared plan, and an autonomous build agent that never touches your files without asking first.
 
-- **Multi-provider** — pick any of 14 providers (OpenAI, Z.ai, Anthropic,
-  Gemini, OpenRouter, Groq, Together, Fireworks, DeepSeek, Mistral,
-  Perplexity, xAI, Cohere, Ollama). Enter your key, click LOAD, pick a model.
-- **Strict BDD evaluator** — each `then` clause is parsed into assertions
-  (`exit code is N`, `stdout contains 'X'`, `stdout matches /regex/`,
-  `stderr is empty`, etc.). Conjuncts joined by `and` all must pass.
-- **SPEC-level retry** — when HEAL classifies a failure as `SPEC`, the loop
-  re-calls `generate_plan` with the diagnostic reasoning attached, up to 2 times.
-- **SQLite persistence** — every run, milestone, healing event, and streamed
-  event is written to `kovix.db`. Browse past runs from the **History** tab.
+## The Problem: The "Vibe Coding" Gap
 
-## Architecture (PAUL-aligned)
+The world has 1 billion+ knowledge workers who think in systems but cannot write syntax. The "vibe coding" movement is exploding, but current AI coding tools (Cursor, GitHub Copilot, Windsurf) are built for developers. They assume the user already knows what they want, how to structure it, and how to read a git diff. They write code immediately without staged reviews.
 
-KOVIX adopts the three core principles from
-[`ChristopherKahler/paul`](https://github.com/ChristopherKahler/paul):
+Kovix is built from first principles for the non-coder.
 
-1. **Loop Integrity** — every PLAN step closes with a UNIFY step that
-   reconciles planned vs. executed state and updates `STATE.md`.
-2. **Acceptance-Driven Development** — plans define "Done" in BDD format
-   (Given / When / Then) and `bdd.py` enforces it per-criterion.
-3. **Diagnostic Failure Routing** — before self-healing, the agent classifies
-   the failure as `INTENT`, `SPEC`, or `CODE`. `SPEC` triggers re-planning.
+## The Solution: The 6-Stage Autonomous Pipeline
 
-```
- ┌────────┐    ┌────────┐    ┌────────┐    ┌────────┐
- │  PLAN  │ -> │ APPLY  │ -> │  HEAL  │ -> │ UNIFY  │
- └────────┘    └────────┘    └────────┘    └────────┘
-   refine       write &        classify       reconcile
-   vibe into    execute        INTENT/SPEC    plan vs
-   BDD plan     milestones     /CODE, patch   reality
-                                │
-                                ▼ SPEC
-                          regenerate_plan
-                          (max 2 retries)
-```
+Kovix guides users through a structured, transparent process:
 
-## File Map
+1. **Idea** — Describe what you want in plain English. A single sentence is enough.
+2. **Refinement** — Kovix interviews you to sharpen the idea, surface tradeoffs, and define scope before building.
+3. **Spec Approval** — Kovix generates a written specification. You edit, push back, and explicitly approve it.
+4. **Plan** — Kovix generates a milestone-by-milestone execution plan.
+5. **Configuration** — Set agent autonomy levels (pause every step, pause at milestones, or full auto) and credit budgets.
+6. **Execution** — The agent builds the software, routing all changes through the Approve Gate.
 
-| File                  | Role                                                                |
-| --------------------- | ------------------------------------------------------------------ |
-| `setup_workspace.py`  | Clones PAUL, bootstraps `workspace/STATE.md` + `PROJECT.md`          |
-| `providers.py`        | Provider catalogue + `/models` discovery (14 providers)             |
-| `agent.py`            | LLM wrapper with 3 strict system prompts (PLAN/APPLY/HEAL)           |
-| `bdd.py`              | Per-criterion assertion interpreter                                  |
-| `loop.py`             | PAUL state machine + SPEC retry + SQLite integration                 |
-| `executor.py`         | Cross-platform `subprocess` runner with typed results                |
-| `db.py`               | SQLite persistence (runs / milestones / healing_events / events)     |
-| `main.py`             | FastAPI app: SSE streaming + provider/model/runs endpoints           |
-| `index.html`          | Dark terminal UI: provider bar, phase tracker, history tab           |
-| `requirements.txt`    | Python dependencies                                                  |
+## The Core Differentiator: The Approve-Before-Write Gate ("Trust UX")
 
-## Quickstart (Windows)
+Non-coders are terrified of AI agents silently overwriting their files.
 
-```powershell
-git clone https://github.com/Razisafir/kovix-mvp.git kovix
-cd kovix
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-python setup_workspace.py
-uvicorn main:app --reload
-# open http://127.0.0.1:8000
-```
+In Kovix, every single file write is staged first. The user sees exactly what will change via a line-by-line diff before anything touches the local disk. Users can Accept, Reject, or Modify each change individually. This applies in every mode, including full auto.
 
-## Using any provider
+## Tech Stack
 
-1. Pick a provider from the dropdown.
-2. Paste your API key (or leave blank if you've set the matching env var).
-3. Click **LOAD** — the model dropdown populates with everything the provider
-   exposes for that key.
-4. Pick a model, type your vibe, hit **EXECUTE**.
+- **Environment:** Standalone Desktop App (Electron)
+- **Runtime:** Node.js 22
+- **Editor UI:** Monaco Editor integration (for inline diffs and code review)
+- **Agent Architecture:** Multi-agent swarm supporting 11+ LLM providers (OpenAI, Anthropic, Ollama, etc.) with local-first session persistence.
 
-### Env-var fallback
+## Development Status
 
-| Provider   | Env var              |
-| ---------- | -------------------- |
-| Z.ai       | `ZAI_API_KEY`        |
-| OpenAI     | `OPENAI_API_KEY`     |
-| Anthropic  | `ANTHROPIC_API_KEY`  |
-| Gemini     | `GEMINI_API_KEY`     |
-| OpenRouter | `OPENROUTER_API_KEY` |
-| Groq       | `GROQ_API_KEY`       |
-| Together   | `TOGETHER_API_KEY`   |
-| Fireworks  | `FIREWORKS_API_KEY`  |
-| DeepSeek   | `DEEPSEEK_API_KEY`   |
-| Mistral    | `MISTRAL_API_KEY`    |
-| Perplexity | `PERPLEXITY_API_KEY` |
-| xAI        | `XAI_API_KEY`        |
-| Cohere     | `COHERE_API_KEY`     |
-| Ollama     | `OLLAMA_API_KEY` (local; usually empty) |
+We recently executed a massive pivot from a heavy Python/FastAPI backend to a lean, ground-up Electron MVP.
 
-Without a key, KOVIX runs in **offline fallback mode** — a deterministic JSON
-producer that exercises every loop path (including a deliberate first-iteration
-`NameError` so the HEAL phase is observable end-to-end).
-
-## BDD assertion syntax
-
-The `then` clause is parsed for the following patterns (case-insensitive,
-`and`-joined conjuncts all must pass):
-
-| Pattern                                       | Meaning                                        |
-| --------------------------------------------- | ---------------------------------------------- |
-| `exit code is N` / `return code is N`         | `result.returncode == N`                        |
-| `stdout contains "X"` / `stdout contains 'X'` | `X in result.stdout`                            |
-| `stdout contains X`                            | `X in result.stdout` (greedy)                   |
-| `stdout does not contain X`                    | `X not in result.stdout`                        |
-| `stdout matches /regex/`                       | `re.search(regex, result.stdout)`               |
-| `stdout matches regex X`                       | `re.search(X, result.stdout)`                   |
-| `stdout is non-empty` / `stdout is not empty`  | `bool(result.stdout.strip())`                   |
-| `stdout is empty`                              | `not result.stdout.strip()`                     |
-| `stderr contains "X"`                          | `X in result.stderr`                            |
-| `stderr is empty`                              | `not result.stderr.strip()`                     |
-| `execution succeeds` / `succeeds`              | `result.success`                                |
-| `execution fails` / `fails`                    | `not result.success`                            |
-
-If no pattern matches, the evaluator falls back to `rc==0 and non-empty stdout`
-and marks the criterion with `fallback_used: true`.
-
-## API
-
-| Method | Path                 | Description                                       |
-| ------ | -------------------- | ------------------------------------------------- |
-| GET    | `/`                  | Single-page frontend                              |
-| GET    | `/api/health`        | Workspace + STATE.md + DB presence probe          |
-| GET    | `/api/providers`     | Full provider catalogue                           |
-| POST   | `/api/models`        | `{provider, api_key}` -> `{models: [...]}`         |
-| POST   | `/api/execute`       | `{prompt, provider, api_key, model}` -> SSE stream |
-| GET    | `/api/runs`          | Cross-run history                                 |
-| GET    | `/api/runs/{id}`     | Full detail for one run                           |
-| GET    | `/api/state`         | Current `STATE.md` contents                       |
-
-The `/api/execute` response is a `text/event-stream` of JSON events shaped like:
-
-```json
-{"phase":"PLAN","message":"Refined goal: ...","status":"success","timestamp":"...","payload":{...}}
-```
-
-## SQLite schema
-
-```text
-runs             (id, started_at, finished_at, vibe, goal, verdict, passed,
-                  failed, total_milestones, provider, model, spec_retries)
-milestones       (run_id, milestone_id, name, filename, returncode,
-                  all_criteria_passed, criteria_json)
-healing_events   (run_id, milestone_id, attempt, classification, reasoning, action)
-events           (run_id, phase, message, status, timestamp, payload_json)
-```
-
-Query it directly:
-
-```bash
-sqlite3 kovix.db "SELECT id, verdict, passed, total_milestones, provider, model FROM runs ORDER BY id DESC LIMIT 20;"
-```
+Current focus: Wiring the Monaco DiffEditor into the Approve-Before-Write staging module.

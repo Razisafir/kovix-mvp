@@ -1352,3 +1352,405 @@ input, select, textarea { font-family: inherit; }
   background-color: #cbd5e1;
   border-radius: 20px;
 }
+
+/* =========================================================================
+   Kovix MVP — Staging Panel (Approve-Before-Write Gate)
+   =========================================================================
+   Bottom-docked overlay that slides up when an AI-proposed file write is
+   awaiting user approval. Hosts a Monaco diff editor and Accept / Reject /
+   Modify controls. Designed to overlay the bottom 60% of the viewport so the
+   chat area above remains visible (the user can still see the agent's last
+   message while deciding what to do with the proposed write).
+
+   Styling goals:
+   - Dark, premium look that matches VS Code / Monaco's `vs-dark` theme so
+     the Monaco container blends seamlessly into the panel.
+   - Material Design 3 inspired to match the rest of Kovix.
+   - The chat area above stays visible so the user retains context.
+
+   NOTE: This entire section is ADDITIVE. No existing rules are modified.
+   ========================================================================= */
+
+:root {
+  /* Staging-specific palette (dark, matches Monaco's vs-dark theme) */
+  --staging-bg:                #1e1e1e;
+  --staging-bg-elev:           #252526;
+  --staging-bg-elev-2:         #2d2d30;
+  --staging-border:            #3c3c3c;
+  --staging-border-soft:       #2a2a2a;
+  --staging-text:              #e8e8e8;
+  --staging-text-dim:          #a8a8a8;
+  --staging-text-faint:        #6e6e6e;
+
+  /* Action accents */
+  --staging-accept:            #2ea043;     /* GitHub-style accept green */
+  --staging-accept-hover:      #3fb958;
+  --staging-accept-soft:       rgba(46, 160, 67, 0.18);
+  --staging-reject:            #e5484d;     /* MD3 error-ish red */
+  --staging-reject-hover:      #f06468;
+  --staging-reject-soft:       rgba(229, 72, 77, 0.18);
+  --staging-primary:           #2563eb;     /* matches Kovix --primary-container */
+  --staging-primary-hover:     #3b82f6;
+  --staging-primary-soft:      rgba(37, 99, 235, 0.22);
+
+  /* Layout */
+  --staging-header-h:          48px;
+  --staging-toolbar-h:         48px;
+  --staging-tabs-h:            36px;
+  --staging-radius:            8px;
+}
+
+/* The panel itself — fixed overlay covering bottom 60% of viewport. */
+.staging-panel {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 60vh;
+  z-index: 1000;
+  background: var(--staging-bg);
+  border-top: 1px solid var(--staging-border);
+  box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  color: var(--staging-text);
+  font-family: var(--font-body);
+  animation: staging-slide-up var(--t-slow) cubic-bezier(0.2, 0, 0, 1);
+}
+
+@keyframes staging-slide-up {
+  from { transform: translateY(100%); opacity: 0.4; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+
+/* Hidden state — `!important` matches the global `.hidden` rule. */
+.staging-panel.hidden { display: none !important; }
+
+/* ---------- Header ---------- */
+.staging-header {
+  flex: 0 0 var(--staging-header-h);
+  height: var(--staging-header-h);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 16px;
+  background: var(--staging-bg-elev);
+  border-bottom: 1px solid var(--staging-border);
+}
+
+.staging-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.staging-title-wrap .material-symbols-outlined {
+  font-size: 20px;
+  color: var(--staging-primary-hover);
+  flex: 0 0 20px;
+}
+.staging-title {
+  font-family: var(--font-headline);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--staging-text);
+  white-space: nowrap;
+}
+.staging-path {
+  font-family: var(--font-code);
+  font-size: 12px;
+  color: var(--staging-text-dim);
+  background: var(--staging-bg-elev-2);
+  border: 1px solid var(--staging-border-soft);
+  padding: 2px 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 360px;
+}
+
+/* Counter pill ("File X of Y" + optional auto badge) */
+.staging-counter {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-label);
+  font-size: 12px;
+  color: var(--staging-text-dim);
+}
+#staging-counter-text {
+  background: var(--staging-bg-elev-2);
+  border: 1px solid var(--staging-border-soft);
+  padding: 4px 10px;
+  border-radius: var(--staging-radius);
+  color: var(--staging-text);
+  font-weight: 500;
+  white-space: nowrap;
+}
+#staging-counter-text .auto-badge {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+#staging-counter-text .auto-badge.accept {
+  background: var(--staging-accept-soft);
+  color: var(--staging-accept-hover);
+  border: 1px solid var(--staging-accept);
+}
+#staging-counter-text .auto-badge.reject {
+  background: var(--staging-reject-soft);
+  color: var(--staging-reject-hover);
+  border: 1px solid var(--staging-reject);
+}
+
+/* The close X button inherits from `.header-icon-btn` — recolor for dark bg */
+.staging-header .header-icon-btn {
+  color: var(--staging-text-dim);
+  flex: 0 0 32px;
+}
+.staging-header .header-icon-btn:hover {
+  background: var(--staging-bg-elev-2);
+  color: var(--staging-text);
+}
+
+/* ---------- Toolbar ---------- */
+.staging-toolbar {
+  flex: 0 0 var(--staging-toolbar-h);
+  height: var(--staging-toolbar-h);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px;
+  background: var(--staging-bg);
+  border-bottom: 1px solid var(--staging-border-soft);
+}
+
+.staging-divider {
+  width: 1px;
+  height: 24px;
+  background: var(--staging-border);
+  margin: 0 4px;
+  flex: 0 0 1px;
+}
+
+/* Staging buttons — common base */
+.staging-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 14px;
+  background: var(--staging-bg-elev-2);
+  color: var(--staging-text);
+  border: 1px solid var(--staging-border);
+  border-radius: var(--staging-radius);
+  font-family: var(--font-label);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background var(--t), border-color var(--t), color var(--t),
+              transform var(--t-fast);
+}
+.staging-btn .material-symbols-outlined { font-size: 16px; }
+.staging-btn:hover { background: var(--staging-bg-elev); }
+.staging-btn:active { transform: translateY(1px); }
+.staging-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* Primary (Accept) — green accent */
+.staging-btn.primary {
+  background: var(--staging-accept-soft);
+  color: var(--staging-accept-hover);
+  border-color: var(--staging-accept);
+}
+.staging-btn.primary:hover {
+  background: var(--staging-accept);
+  color: #fff;
+  border-color: var(--staging-accept-hover);
+}
+
+/* Danger (Reject) — red accent */
+.staging-btn.danger {
+  background: var(--staging-reject-soft);
+  color: var(--staging-reject-hover);
+  border-color: var(--staging-reject);
+}
+.staging-btn.danger:hover {
+  background: var(--staging-reject);
+  color: #fff;
+  border-color: var(--staging-reject-hover);
+}
+
+/* Ghost (Accept All / Reject All) — transparent */
+.staging-btn.ghost {
+  background: transparent;
+  color: var(--staging-text-dim);
+  border-color: var(--staging-border-soft);
+}
+.staging-btn.ghost:hover {
+  background: var(--staging-bg-elev-2);
+  color: var(--staging-text);
+}
+.staging-btn.ghost.danger:hover {
+  background: var(--staging-reject-soft);
+  color: var(--staging-reject-hover);
+  border-color: var(--staging-reject);
+}
+
+/* "Active" / locked state — used when auto-mode is engaged */
+.staging-btn.active {
+  background: var(--staging-primary-soft);
+  color: var(--staging-primary-hover);
+  border-color: var(--staging-primary);
+  box-shadow: inset 0 0 0 1px var(--staging-primary);
+}
+.staging-btn.ghost.danger.active {
+  background: var(--staging-reject-soft);
+  color: var(--staging-reject-hover);
+  border-color: var(--staging-reject);
+  box-shadow: inset 0 0 0 1px var(--staging-reject);
+}
+
+/* ---------- Reject reason input row ---------- */
+.staging-reject-reason-wrap {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: var(--staging-bg-elev);
+  border-bottom: 1px solid var(--staging-border-soft);
+  animation: staging-reason-in var(--t) ease;
+}
+@keyframes staging-reason-in {
+  from { transform: translateY(-4px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+.staging-reject-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 32px;
+  padding: 0 12px;
+  background: var(--staging-bg);
+  color: var(--staging-text);
+  border: 1px solid var(--staging-reject);
+  border-radius: var(--staging-radius);
+  font-family: var(--font-body);
+  font-size: 13px;
+  outline: none;
+  transition: border-color var(--t), box-shadow var(--t);
+}
+.staging-reject-input:focus {
+  border-color: var(--staging-reject-hover);
+  box-shadow: 0 0 0 2px var(--staging-reject-soft);
+}
+.staging-reject-input::placeholder { color: var(--staging-text-faint); }
+
+/* ---------- Mode tabs (Diff View / Edit) ---------- */
+.staging-mode-tabs {
+  flex: 0 0 var(--staging-tabs-h);
+  height: var(--staging-tabs-h);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 16px;
+  background: var(--staging-bg);
+  border-bottom: 1px solid var(--staging-border-soft);
+}
+.staging-mode-tab {
+  height: 26px;
+  padding: 0 14px;
+  background: transparent;
+  color: var(--staging-text-dim);
+  border: 1px solid transparent;
+  border-radius: var(--staging-radius);
+  font-family: var(--font-label);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--t), color var(--t), border-color var(--t);
+}
+.staging-mode-tab:hover {
+  background: var(--staging-bg-elev-2);
+  color: var(--staging-text);
+}
+.staging-mode-tab.active {
+  background: var(--staging-primary-soft);
+  color: var(--staging-primary-hover);
+  border-color: var(--staging-primary);
+}
+
+/* ---------- Monaco container ---------- */
+.staging-monaco-container {
+  flex: 1 1 auto;
+  min-height: 300px;
+  background: #1e1e1e; /* matches Monaco's vs-dark editor background */
+  position: relative;
+  overflow: hidden;
+}
+/* Make sure Monaco's own scrollbars fit the dark theme */
+.staging-monaco-container .monaco-editor,
+.staging-monaco-container .monaco-editor .margin,
+.staging-monaco-container .monaco-editor .monaco-editor-background {
+  background: #1e1e1e;
+}
+
+/* ---------- Status banner (errors / info) ---------- */
+.staging-status {
+  flex: 0 0 auto;
+  padding: 8px 16px;
+  font-family: var(--font-label);
+  font-size: 12px;
+  border-top: 1px solid var(--staging-border-soft);
+}
+.staging-status.error {
+  background: var(--staging-reject-soft);
+  color: var(--staging-reject-hover);
+}
+.staging-status.info {
+  background: var(--staging-primary-soft);
+  color: var(--staging-primary-hover);
+}
+
+/* ---------- Responsive — small screens ---------- */
+@media (max-width: 800px) {
+  .staging-panel {
+    height: 80vh;
+  }
+  .staging-path {
+    max-width: 140px;
+  }
+  .staging-toolbar {
+    overflow-x: auto;
+  }
+  .staging-btn {
+    padding: 0 10px;
+    font-size: 12px;
+  }
+}
+
+/* ---------- Loading shimmer (shown while Monaco boots) ---------- */
+.staging-monaco-container.is-loading::after {
+  content: 'Loading Monaco editor…';
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--staging-text-dim);
+  font-family: var(--font-label);
+  font-size: 13px;
+  background: #1e1e1e;
+  z-index: 2;
+}

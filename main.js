@@ -33,6 +33,12 @@ const OpenAI = require('openai').default || require('openai');
 // autonomous agent like Cursor or Antigravity.
 const { executeTool, buildAgentSystemPrompt, parseToolCalls } = require('./tools');
 
+// THE APPROVE-BEFORE-WRITE GATE — every file write from the autonomous agent
+// (both the Execute step and the write_file tool) MUST pass through staging.
+// The user sees a Monaco diff and explicitly accepts, rejects, or modifies
+// each change before it touches disk. See staging.js for the full contract.
+const { staging, STAGING_CHANNELS } = require('./staging');
+
 /* -------------------------------------------------------------------------- */
 /* Constants                                                                  */
 /* -------------------------------------------------------------------------- */
@@ -881,6 +887,9 @@ async function loadSession(id) {
         convoState.messages = s.messages.slice();
         // Switch to the session's workspace if different from current
         if (s.workspacePath && s.workspacePath !== (await getActiveWorkspace())) {
+          // Reset staging BEFORE switching — pending proposals belong to the
+          // old workspace and would write to the wrong place if accepted.
+          staging.reset();
           await setActiveWorkspace(s.workspacePath);
           notifyTreeChanged(null);
         }
@@ -940,6 +949,15 @@ function sendToRenderer(channel, payload) {
     console.error(`Failed to send ${channel} to renderer:`, err);
   }
 }
+
+// Initialize the staging manager — every file write from the agent MUST
+// pass through here. The renderer subscribes to STAGING_CHANNELS.PROPOSE
+// and STAGING_CHANNELS.QUEUE_UPDATE to render the Monaco diff UI.
+// getWorkspace is async because it reads from settings.json on disk.
+staging.init({
+  getWorkspace: () => getActiveWorkspace(),
+  sendToRenderer,
+});
 
 function notifyTreeChanged(relativePath) {
   sendToRenderer('fs:tree-changed', { relativePath });
@@ -1031,6 +1049,8 @@ ipcMain.handle('dialog:open-folder', async () => {
     }
     const dirPath = result.filePaths[0];
     await setActiveWorkspace(dirPath);
+    // Reset staging — any pending proposals belonged to the previous workspace.
+    staging.reset();
     // Notify any open renderer that the workspace (and thus the tree) changed.
     notifyTreeChanged(null);
     return { ok: true, path: dirPath };
@@ -1310,7 +1330,14 @@ ipcMain.handle('send-message', async (_evt, req) => {
     const currentStep = convoState.step;
     const nextStep = advanceStep(currentStep);
 
-    // Execute step: parse code block and write to disk INSIDE the workspace.
+    // Execute step: parse code block and route it through the APPROVE GATE.
+    // The agent no longer writes directly to disk. The proposed write is
+    // staged, the user sees a Monaco diff, and must explicitly accept,
+    // reject (with reason), or modify before the file is touched.
+    //
+    // On REJECT: the user's reason is appended to the LLM context and the
+    // LLM is re-called with a prompt asking it to revise. This loops up to
+    // STAGING_MAX_RETRIES times before giving up and surfacing the error.
     if (currentStep === 'execute') {
       const code = extractCodeBlock(assistantText);
       if (!code) {
@@ -1324,34 +1351,160 @@ ipcMain.handle('send-message', async (_evt, req) => {
       }
       const lang = extractCodeBlockLang(assistantText);
       const filename = pickOutputFilename(lang);
-      const outPath = path.join(workspace, filename);
-      try {
-        await fsp.writeFile(outPath, code, 'utf8');
-        // Tell the renderer to refresh its file tree.
-        notifyTreeChanged(filename);
-        // Persist the session transcript.
-        const saved = await saveCurrentSession();
-        return {
-          ok: true,
-          step: currentStep,
-          nextStep: currentStep,
-          assistant: assistantText,
-          info: `Success! Code written to ${filename}`,
-          wroteFile: true,
-          writtenPath: outPath,
-          writtenName: filename,
-          session: saved ? { id: saved.id, title: saved.title } : null,
-        };
-      } catch (writeErr) {
-        console.error('write output file failed:', writeErr);
+
+      // ---- Approve-Before-Write loop with rejection feedback ----
+      const STAGING_MAX_RETRIES = 3;
+      let attempt = 0;
+      let currentCode = code;
+      let currentFilename = filename;
+      let lastAssistantText = assistantText;
+
+      while (attempt < STAGING_MAX_RETRIES) {
+        attempt++;
+        console.log(logTag, `staging.propose attempt ${attempt}/${STAGING_MAX_RETRIES} for ${currentFilename}`);
+
+        let stagingResult;
+        try {
+          stagingResult = await staging.propose(currentFilename, currentCode, 'execute');
+        } catch (proposeErr) {
+          console.error(logTag, 'staging.propose failed:', proposeErr);
+          return {
+            ok: false,
+            step: currentStep,
+            nextStep: currentStep,
+            assistant: lastAssistantText,
+            error: `Staging error: ${proposeErr.message}`,
+          };
+        }
+
+        // ACCEPT or MODIFY — file was written to disk (with backup if overwriting).
+        // Return success.
+        if (stagingResult.action === 'accept' || stagingResult.action === 'modify') {
+          const finalCode = stagingResult.finalContent;
+          const outPath = path.join(workspace, currentFilename);
+          notifyTreeChanged(currentFilename);
+          const saved = await saveCurrentSession();
+          return {
+            ok: true,
+            step: currentStep,
+            nextStep: currentStep,
+            assistant: lastAssistantText,
+            info: stagingResult.action === 'modify'
+              ? `Modified and written to ${currentFilename}`
+              : `Success! Code written to ${currentFilename}`,
+            wroteFile: true,
+            writtenPath: outPath,
+            writtenName: currentFilename,
+            modified: stagingResult.action === 'modify',
+            session: saved ? { id: saved.id, title: saved.title } : null,
+          };
+        }
+
+        // REJECT — feed the user's reason back to the LLM and retry.
+        // The agent loop must NOT hang; we capture the reason, append it to
+        // the conversation context, and re-call the LLM with a prompt that
+        // asks it to revise the code based on the rejection feedback.
+        if (stagingResult.action === 'reject') {
+          const reason = stagingResult.reason || 'User rejected the change (no reason provided)';
+          console.log(logTag, `staging.propose REJECTED on attempt ${attempt}: "${reason}"`);
+
+          // If this was the last attempt, surface the error to the user.
+          if (attempt >= STAGING_MAX_RETRIES) {
+            const saved = await saveCurrentSession();
+            return {
+              ok: false,
+              step: currentStep,
+              nextStep: currentStep,
+              assistant: lastAssistantText,
+              error: `User rejected the proposed write ${STAGING_MAX_RETRIES} times. Last reason: "${reason}". Please revise your request and try again.`,
+              session: saved ? { id: saved.id, title: saved.title } : null,
+            };
+          }
+
+          // Append the rejected assistant response to the conversation,
+          // then add a system-style user message that tells the LLM what
+          // was rejected and why, and asks it to revise.
+          convoState.messages.push({ role: 'assistant', content: lastAssistantText });
+          const feedbackMsg =
+            `The user REJECTED your proposed write to "${currentFilename}".\n\n` +
+            `Reason: "${reason}"\n\n` +
+            `Please revise the code based on this feedback and output a new code block. ` +
+            `Do NOT repeat the same approach that was just rejected. Address the user's concern directly.`;
+          convoState.messages.push({ role: 'user', content: feedbackMsg });
+
+          // Notify the renderer that we're re-calling the LLM (streaming).
+          sendToRenderer('llm:delta', { delta: '' }); // keep UI alive
+
+          // Re-call the LLM with the updated context.
+          console.log(logTag, `re-calling LLM after rejection (attempt ${attempt + 1})...`);
+          let revisedText;
+          try {
+            llmBusy = true; // re-assert busy flag for the new LLM call
+            revisedText = await callLLM(settings, convoState.messages);
+          } catch (llmErr) {
+            llmBusy = false;
+            console.error(logTag, 'LLM re-call after rejection failed:', llmErr);
+            const saved = await saveCurrentSession();
+            return {
+              ok: false,
+              step: currentStep,
+              nextStep: currentStep,
+              assistant: lastAssistantText,
+              error: `LLM re-call after rejection failed: ${llmErr.message}`,
+              session: saved ? { id: saved.id, title: saved.title } : null,
+            };
+          } finally {
+            llmBusy = false;
+          }
+
+          // Parse the revised response.
+          const revisedCode = extractCodeBlock(revisedText);
+          if (!revisedCode) {
+            // LLM didn't output a code block this time — surface its text
+            // and stop the loop. Don't keep retrying if the LLM gave up.
+            const saved = await saveCurrentSession();
+            return {
+              ok: false,
+              step: currentStep,
+              nextStep: currentStep,
+              assistant: revisedText,
+              error: 'LLM did not output a code block after rejection. Conversation context preserved — try again.',
+              session: saved ? { id: saved.id, title: saved.title } : null,
+            };
+          }
+
+          // Update state for the next loop iteration.
+          lastAssistantText = revisedText;
+          currentCode = revisedCode;
+          // Re-derive filename from the revised code block's language tag
+          // (the LLM may have switched languages, e.g. from .html to .js).
+          const revisedLang = extractCodeBlockLang(revisedText);
+          if (revisedLang) {
+            currentFilename = pickOutputFilename(revisedLang);
+          }
+          // Loop continues — staging.propose will be called again with the revised code.
+          continue;
+        }
+
+        // Unknown action — should never happen.
+        console.error(logTag, 'staging.propose returned unknown action:', stagingResult.action);
         return {
           ok: false,
           step: currentStep,
           nextStep: currentStep,
-          assistant: assistantText,
-          error: `Error writing ${filename}: ${writeErr.message}`,
+          assistant: lastAssistantText,
+          error: `Unknown staging action: ${stagingResult.action}`,
         };
       }
+
+      // Should not reach here, but just in case.
+      return {
+        ok: false,
+        step: currentStep,
+        nextStep: currentStep,
+        assistant: lastAssistantText,
+        error: 'Staging loop exhausted without resolution.',
+      };
     }
 
     // Step advancement logic:
@@ -1476,6 +1629,9 @@ ipcMain.handle('sessions:delete', async (_evt, id) => {
 ipcMain.handle('sessions:new', async () => {
   try {
     resetConvo();
+    // Reset staging — a new session means a fresh run; pending proposals
+    // from the previous session are no longer relevant.
+    staging.reset();
     return { ok: true, step: convoState.step };
   } catch (err) {
     console.error('sessions:new error:', err);
@@ -1553,6 +1709,101 @@ ipcMain.handle('get-convo-state', async () => {
     sessionId: convoState.sessionId,
     startedAt: convoState.startedAt,
   };
+});
+
+/* -------------------------------------------------------------------------- */
+/* IPC handlers — Staging (Approve-Before-Write Gate)                         */
+/* -------------------------------------------------------------------------- */
+//
+// These handlers are the renderer's only way to resolve pending proposals.
+// The renderer subscribes to STAGING_CHANNELS.PROPOSE (new diff to review)
+// and STAGING_CHANNELS.QUEUE_UPDATE (queue state changed) via preload.js.
+//
+// Flow:
+//   1. Agent (Execute step or write_file tool) calls staging.propose()
+//   2. staging.propose() emits STAGING_CHANNELS.PROPOSE → renderer shows diff
+//   3. staging.propose() returns a Promise that does NOT resolve yet
+//   4. Agent loop is paused waiting on that Promise
+//   5. User clicks Accept/Reject/Modify in the Monaco diff panel
+//   6. Renderer calls window.kovix.resolveStaging(decision)
+//   7. This handler calls staging.resolve(decision)
+//   8. staging writes the file (with backup) and resolves the Promise
+//   9. Agent loop resumes; if rejected with a reason, that reason is fed
+//      back to the LLM context for retry
+
+ipcMain.handle('staging:resolve', async (_evt, decision) => {
+  try {
+    if (!decision || typeof decision !== 'object') {
+      return { ok: false, error: 'Invalid decision payload.' };
+    }
+    const result = await staging.resolve(decision);
+    // If a file was written (accept/modify), notify the renderer to refresh
+    // its file tree so the new file appears immediately.
+    if (result.ok && result.result &&
+        (result.result.action === 'accept' || result.result.action === 'modify')) {
+      // We don't have the relative path here directly, but staging broadcasts
+      // a queue-update event that the renderer can use to find the resolved
+      // proposal's path. The renderer should refresh the tree on any
+      // resolved:accept / resolved:modify status change.
+      sendToRenderer('fs:tree-changed', { relativePath: null });
+    }
+    return result;
+  } catch (err) {
+    console.error('[staging:resolve] error:', err);
+    return { ok: false, error: err && err.message ? err.message : String(err) };
+  }
+});
+
+ipcMain.handle('staging:get-current', async () => {
+  try {
+    return { ok: true, proposal: staging.getCurrent() };
+  } catch (err) {
+    console.error('[staging:get-current] error:', err);
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('staging:get-queue', async () => {
+  try {
+    return { ok: true, queue: staging.getQueue() };
+  } catch (err) {
+    console.error('[staging:get-queue] error:', err);
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('staging:set-auto-mode', async (_evt, payload) => {
+  try {
+    if (!payload || typeof payload !== 'object') {
+      return { ok: false, error: 'Invalid payload.' };
+    }
+    const { mode, reason } = payload;
+    staging.setAutoMode(mode, reason);
+    return { ok: true };
+  } catch (err) {
+    console.error('[staging:set-auto-mode] error:', err);
+    return { ok: false, error: err && err.message ? err.message : String(err) };
+  }
+});
+
+ipcMain.handle('staging:clear-auto-mode', async () => {
+  try {
+    staging.clearAutoMode();
+    return { ok: true };
+  } catch (err) {
+    console.error('[staging:clear-auto-mode] error:', err);
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('staging:reset', async () => {
+  try {
+    staging.reset();
+    return { ok: true };
+  } catch (err) {
+    console.error('[staging:reset] error:', err);
+    return { ok: false, error: err.message };
+  }
 });
 
 /* -------------------------------------------------------------------------- */
