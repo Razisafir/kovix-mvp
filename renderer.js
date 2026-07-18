@@ -1624,7 +1624,9 @@ const StagingPanel = (function () {
   function loadDiffEditor() {
     const loader = window.MonacoLoader;
     if (!loader || typeof loader.createDiffEditor !== 'function') {
-      showStatus('Monaco loader not available — cannot show diff.', 'error');
+      // Monaco loader itself is missing — show a fallback message but
+      // KEEP the panel visible so the user can still Reject/Close.
+      showFallbackView('Monaco loader not available. You can still Reject or Close to dismiss.');
       return;
     }
     if (!currentProposal) return;
@@ -1644,17 +1646,66 @@ const StagingPanel = (function () {
       try { diffEditor.layout(); } catch (_) { /* noop */ }
     }).catch((err) => {
       if (dom.container) dom.container.classList.remove('is-loading');
-      showStatus('Failed to load Monaco: ' + (err && err.message ? err.message : String(err)), 'error');
+      // Monaco failed to load — show a fallback view with the proposed
+      // content in a plain <pre> so the user can still see what's being
+      // proposed and Accept/Reject/Close still work.
+      const msg = 'Monaco failed to load: ' + (err && err.message ? err.message : String(err));
+      showFallbackView(msg);
     });
+  }
+
+  /**
+   * Show a fallback view when Monaco fails to load. Renders the proposed
+   * new content in a plain <pre> so the user can still see what's being
+   * proposed and click Accept/Reject/Close.
+   *
+   * @param {string} errorMsg - message to show at the top of the fallback view
+   */
+  function showFallbackView(errorMsg) {
+    if (!dom.container) return;
+    // Clear any loading state
+    dom.container.classList.remove('is-loading');
+    // Build a minimal fallback view — error banner + the proposed content
+    // in a scrollable <pre>. The buttons in the toolbar still work.
+    const oldC = currentProposal && currentProposal.oldContent != null ? currentProposal.oldContent : '';
+    const newC = currentProposal && currentProposal.newContent != null ? currentProposal.newContent : '';
+    const escapedNew = String(newC)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const escapedOld = String(oldC)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    dom.container.innerHTML =
+      '<div class="staging-fallback">' +
+        '<div class="staging-fallback-error">' +
+          '<span class="material-symbols-outlined">warning</span>' +
+          '<span>' + escapeHtml(errorMsg) + '</span>' +
+        '</div>' +
+        '<div class="staging-fallback-content">' +
+          '<div class="staging-fallback-col">' +
+            '<div class="staging-fallback-label">Original</div>' +
+            '<pre class="staging-fallback-pre">' + (escapedOld || '(empty — new file)') + '</pre>' +
+          '</div>' +
+          '<div class="staging-fallback-col">' +
+            '<div class="staging-fallback-label">Proposed</div>' +
+            '<pre class="staging-fallback-pre">' + escapedNew + '</pre>' +
+          '</div>' +
+        '</div>' +
+        '<div class="staging-fallback-hint">You can still Accept, Reject, or Close.</div>' +
+      '</div>';
   }
 
   function onQueueUpdate(payload) {
     currentQueue = payload;
     updateCounter();
-    // If the queue is empty / no pending proposal, hide the panel
-    if (payload && payload.pendingCount === 0 && !payload.queue.some((p) => p.status === 'pending')) {
-      if (currentProposal && payload.autoMode === 'manual') {
-        // No more pending — clear out
+    // If the queue has no pending proposals, ALWAYS hide the panel.
+    //
+    // Previously this only hid when autoMode === 'manual', which meant the
+    // panel stayed visible forever after an "Accept All" / "Reject All" run
+    // drained the queue — locking the user out of the chat. Now we hide
+    // unconditionally when there's nothing pending.
+    if (payload && payload.pendingCount === 0) {
+      const hasPending = Array.isArray(payload.queue) &&
+        payload.queue.some((p) => p.status === 'pending');
+      if (!hasPending) {
         disposeEditors();
         hidePanel();
         currentProposal = null;
@@ -1785,11 +1836,20 @@ const StagingPanel = (function () {
   }
 
   function onClose() {
-    if (busy) return;
+    // The close button must ALWAYS work — even if Monaco failed to load,
+    // even if we're mid-resolve, even if the queue is in a weird state.
+    // If the user clicks the X, we dismiss the panel. If there's a pending
+    // proposal, we reject it with a fixed reason so the agent loop unblocks.
     if (!currentProposal) {
+      // No pending proposal — just hide the panel.
+      disposeEditors();
       hidePanel();
       return;
     }
+    // If we're busy (mid-resolve), force-clear the busy state so the close
+    // actually goes through. The user wants out.
+    busy = false;
+    setBusy(false);
     // Close = reject with a fixed reason
     resolveAndClose({
       action: 'reject',

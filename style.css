@@ -1469,13 +1469,27 @@ input, select, textarea { font-family: inherit; }
   --staging-radius:            6px;   /* sharp tier-1 look */
 }
 
-/* The panel itself — fixed overlay covering bottom 60% of viewport. */
+/* The panel itself — fixed bottom drawer overlay.
+ *
+ * DESIGN: The panel is an absolutely-positioned overlay that hovers OVER
+ * the chat content (not in the flexbox flow). This means:
+ *   - It NEVER pushes the chat input out of view (the user can always
+ *     see what the agent is doing in the chat above the panel).
+ *   - It slides up from the bottom with a high z-index and a strong
+ *     shadow so it visually floats above the main content.
+ *   - When hidden (pendingCount === 0), it's display:none — completely
+ *     removed from the layout so the chat is fully usable.
+ *
+ * HEIGHT: 45vh — enough to show a meaningful diff without dominating the
+ * screen. On small windows (<800px) it expands to 60vh.
+ */
 .staging-panel {
   position: fixed;
   left: 0;
   right: 0;
   bottom: 0;
-  height: 60vh;
+  height: 45vh;
+  min-height: 280px;
   z-index: 1000;
   background: var(--staging-bg);
   border-top: 1px solid var(--staging-border);
@@ -1493,7 +1507,8 @@ input, select, textarea { font-family: inherit; }
   to   { transform: translateY(0);    opacity: 1; }
 }
 
-/* Hidden state — `!important` matches the global `.hidden` rule. */
+/* Hidden state — `!important` matches the global `.hidden` rule.
+ * When the queue is empty, the panel is COMPLETELY removed from layout. */
 .staging-panel.hidden { display: none !important; }
 
 /* ---------- Header ---------- */
@@ -1845,7 +1860,7 @@ input, select, textarea { font-family: inherit; }
 /* ---------- Responsive — small screens ---------- */
 @media (max-width: 800px) {
   .staging-panel {
-    height: 90vh;  /* full-height takeover on narrow windows */
+    height: 60vh;  /* taller on narrow windows, but still leaves chat visible above */
   }
   .staging-path {
     max-width: 140px;
@@ -1892,4 +1907,90 @@ input, select, textarea { font-family: inherit; }
     z-index: 40;
     box-shadow: -16px 0 48px rgba(0, 0, 0, 0.5);  /* float above chat */
   }
+}
+
+/* ---------- Fallback view (shown when Monaco fails to load) ----------
+ *
+ * If Monaco can't boot (e.g. worker CSP block, missing asset, Windows
+ * path issue), we show the proposed content in a plain <pre> so the user
+ * can still see what's being written and Accept/Reject/Close still work.
+ * This guarantees the panel is NEVER a dead end — the user can always
+ * dismiss it and get back to the chat.
+ */
+.staging-fallback {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 12px 16px;
+  gap: 12px;
+  overflow: hidden;
+}
+
+.staging-fallback-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 4px;
+  color: #fca5a5;
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+
+.staging-fallback-error .material-symbols-outlined {
+  font-size: 16px;
+  color: var(--danger, #ef4444);
+  flex: 0 0 16px;
+}
+
+.staging-fallback-content {
+  display: flex;
+  gap: 12px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.staging-fallback-col {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.staging-fallback-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-tertiary, #6b6b75);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 6px;
+  flex: 0 0 auto;
+}
+
+.staging-fallback-pre {
+  flex: 1 1 auto;
+  margin: 0;
+  padding: 12px;
+  background: var(--bg-input, #1e1e22);
+  border: 1px solid var(--border-default, #2a2a30);
+  border-radius: 4px;
+  color: var(--text-primary, #ededed);
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: auto;
+}
+
+.staging-fallback-hint {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--text-tertiary, #6b6b75);
+  text-align: center;
+  padding: 4px 0;
 }
