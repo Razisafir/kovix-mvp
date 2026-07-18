@@ -33,7 +33,29 @@
 
 (function () {
   const MONACO_VS_PATH = 'node_modules/monaco-editor/min/vs';
-  const LOADER_SCRIPT_URL = MONACO_VS_PATH + '/loader.js';
+
+  // Compute an absolute URL to the Monaco AMD loader directory.
+  //
+  // WHY: A bare relative path like 'node_modules/...' is brittle — it only
+  // works when the document's base URL is the project root. In packaged
+  // (asar) builds or after certain renderer reloads, the base URL can
+  // shift and the relative path resolves to a nonexistent location,
+  // producing "Failed to load Monaco AMD loader.js" errors.
+  //
+  // FIX: Resolve the path against `document.baseURI`, which always points
+  // at the index.html location — in dev that's the project root, in a
+  // packaged build it's inside app.asar (Electron transparently patches
+  // file:// reads to reach inside asar). This produces a stable file:// URL
+  // that works regardless of how Electron loaded the window.
+  const MONACO_VS_URL = (function () {
+    try {
+      return new URL(MONACO_VS_PATH + '/', document.baseURI).href;
+    } catch (_) {
+      // Fallback: use the relative path directly (works in dev)
+      return MONACO_VS_PATH + '/';
+    }
+  })();
+  const LOADER_SCRIPT_URL = MONACO_VS_URL + 'loader.js';
   const EDITOR_MAIN_MODULE = 'vs/editor/editor.main';
 
   // Module-level cache. Once Monaco is loaded we reuse the same instance
@@ -151,10 +173,9 @@
    * @returns {string} URL usable by `new Worker()`
    */
   function getWorkerUrl(workerModuleId) {
-    // Resolve relative to the document base (index.html is at the project
-    // root, so 'node_modules/...' works the same way it does for the
-    // AMD loader script itself).
-    return MONACO_VS_PATH + '/' + workerModuleId + '.js';
+    // Use the absolute MONACO_VS_URL so workers resolve correctly regardless
+    // of the document's base URL (same fix as the loader script itself).
+    return MONACO_VS_URL + workerModuleId + '.js';
   }
 
   /**
@@ -258,9 +279,10 @@
     monacoPromise = injectAmdLoader()
       .then(() => {
         setupMonacoEnvironment();
-        // Configure AMD paths so 'vs/...' module ids resolve to
-        // node_modules/monaco-editor/min/vs/...
-        window.require.config({ paths: { vs: MONACO_VS_PATH } });
+        // Configure AMD paths so 'vs/...' module ids resolve to the absolute
+        // file:// URL of node_modules/monaco-editor/min/vs/ — this avoids
+        // brittle relative-path resolution issues in packaged builds.
+        window.require.config({ paths: { vs: MONACO_VS_URL } });
         return new Promise((resolve, reject) => {
           window.require(
             [EDITOR_MAIN_MODULE],

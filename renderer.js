@@ -1412,14 +1412,32 @@ const StagingPanel = (function () {
 
     // Refresh queue state on boot (in case a proposal was pending before
     // the renderer reloaded — e.g. after a hot reload during development).
+    //
+    // CRITICAL: The IPC invoke returns a WRAPPED response `{ ok, queue }`,
+    // but `onQueueUpdate()` expects the UNWRAPPED queue state (matching the
+    // `staging:queue-update` event payload shape). We must unwrap before
+    // passing to `onQueueUpdate()` — otherwise `currentQueue.queue` ends up
+    // being the queue STATE object instead of the queue ARRAY, and
+    // `updateCounter()` reads `q.queue.length` as `undefined`, producing
+    // the "File 1 of undefined" bug.
     if (window.kovix && typeof window.kovix.getStagingQueue === 'function') {
       window.kovix.getStagingQueue()
-        .then((q) => { onQueueUpdate(q); })
+        .then((res) => {
+          // Unwrap: IPC returns { ok: true, queue: <queueState> }
+          // Event payload is just <queueState> directly.
+          const q = (res && res.ok && res.queue) ? res.queue : res;
+          if (q && q.queue) onQueueUpdate(q);
+        })
         .catch((err) => console.warn('[staging-panel] initial getStagingQueue failed:', err));
     }
+    // Same unwrapping for getCurrentStaging: IPC returns { ok, proposal },
+    // but onPropose expects { proposal: <proposalObject> }.
     if (window.kovix && typeof window.kovix.getCurrentStaging === 'function') {
       window.kovix.getCurrentStaging()
-        .then((p) => { if (p) onPropose({ proposal: p }); })
+        .then((res) => {
+          const p = (res && res.ok && res.proposal) ? res.proposal : (res && res.proposal) ? res.proposal : res;
+          if (p) onPropose({ proposal: p });
+        })
         .catch((err) => console.warn('[staging-panel] initial getCurrentStaging failed:', err));
     }
 
@@ -1495,14 +1513,26 @@ const StagingPanel = (function () {
   function updateCounter() {
     if (!dom.counterText) return;
     if (!currentQueue) {
-      dom.counterText.textContent = '';
+      // No queue state yet — if we have a proposal, show a minimal counter
+      // rather than leaving it blank (which looks broken).
+      if (currentProposal) {
+        dom.counterText.textContent = 'File 1';
+      } else {
+        dom.counterText.textContent = '';
+      }
       return;
     }
     const q = currentQueue;
-    const total = q.queue ? q.queue.length : 0;
-    const idx = q.currentIndex || 0;
-    const x = Math.min(idx + 1, total || 1);
-    let html = 'File ' + x + ' of ' + total;
+    // Defensive: ensure q.queue is an array before reading .length.
+    // (Prior to the IPC unwrap fix, q.queue could be the queue STATE object
+    // instead of the array, producing "File 1 of undefined".)
+    const queueArr = Array.isArray(q.queue) ? q.queue : (q.queue && Array.isArray(q.queue.queue) ? q.queue.queue : []);
+    const total = queueArr.length;
+    const idx = typeof q.currentIndex === 'number' ? q.currentIndex : 0;
+    const x = total > 0 ? Math.min(idx + 1, total) : 1;
+    // If total is 0 (shouldn't happen if we have a proposal), show "File X"
+    // without "of Y" rather than "File X of 0" or "of undefined".
+    let html = total > 0 ? ('File ' + x + ' of ' + total) : ('File ' + x);
     if (q.autoMode === 'accept-all') {
       html += ' <span class="auto-badge accept">Auto: Accept All</span>';
     } else if (q.autoMode === 'reject-all') {
@@ -1566,6 +1596,25 @@ const StagingPanel = (function () {
       dom.title.textContent = currentProposal.isCreate ? 'Approve Create' : 'Approve Write';
     }
     if (dom.path) dom.path.textContent = currentProposal.path || '';
+
+    // Defensive: if we don't have a queue state yet (race condition where
+    // staging:propose arrives before staging:queue-update), fetch it now
+    // so the counter shows "File X of Y" instead of "File 1 of undefined".
+    if (!currentQueue || !currentQueue.queue) {
+      if (window.kovix && typeof window.kovix.getStagingQueue === 'function') {
+        window.kovix.getStagingQueue()
+          .then((res) => {
+            const q = (res && res.ok && res.queue) ? res.queue : res;
+            if (q && q.queue) onQueueUpdate(q);
+          })
+          .catch(() => { /* ignore — counter will update on next queue-update event */ });
+      }
+    } else {
+      // We already have a queue — update the counter now to reflect this
+      // new proposal (the staging:queue-update event may have arrived
+      // already, but calling updateCounter() is idempotent and cheap).
+      updateCounter();
+    }
 
     // Show panel + lazy-load Monaco
     showPanel();
